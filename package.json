@@ -1,0 +1,30 @@
+{
+  "name": "dual-402",
+  "version": "0.1.0",
+  "description": "Express middleware that accepts both x402 and MPP payments on the same route",
+  "type": "module",
+  "main": "dist/express.js",
+  "types": "dist/express.d.ts",
+  "exports": {
+    "./express": {
+      "import": "./dist/express.js",
+      "types": "./dist/express.d.ts"
+    }
+  },
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch"
+  },
+  "dependencies": {
+    "mppx": "^0.4.11"
+  },
+  "peerDependencies": {
+    "express": "^5.0.0"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.0",
+    "typescript": "^5.7.0"
+  },
+  "license": "MIT",
+  "private": true
+}
