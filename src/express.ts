@@ -3,12 +3,10 @@
  *
  * Express middleware that accepts both x402 and MPP payments on the same route.
  *
- * Under the hood:
- *   - MPP: delegates to mppx (stateless HMAC challenge, Tempo settlement)
- *   - x402: generates PAYMENT-REQUIRED header, verifies via facilitator
+ * x402: Generates PAYMENT-REQUIRED header, verifies via facilitator.
+ * MPP:  Delegates to mppx (stateless HMAC challenges, Tempo settlement).
  *
- * The two protocols never interact — the middleware just detects which one
- * the client speaks and routes accordingly.
+ * No new npm dependencies — x402 side is just HTTP calls to the facilitator.
  */
 
 import type { Request, Response, NextFunction, RequestHandler, Express } from "express";
@@ -23,12 +21,14 @@ export type MppConfig = {
   recipient: string;
   /** HMAC secret for stateless challenge verification */
   secretKey: string;
+  /** Enable MPP testnet mode */
+  testnet?: boolean;
 };
 
 export type X402Config = {
   /** Wallet address receiving x402 payments (can be different chain than MPP) */
   payTo: string;
-  /** Chain identifier: "base", "base-sepolia", "ethereum", etc. */
+  /** CAIP-2 chain identifier: "eip155:84532", "eip155:8453", "eip155:1", etc. */
   network: string;
   /** Facilitator URL for verify + settle (e.g., "https://x402.org/facilitator") */
   facilitatorUrl: string;
@@ -48,30 +48,31 @@ export type ChargeOptions = {
 
 export type Dual402Instance = {
   /** Create a charge middleware for a specific route */
-  charge(options: ChargeOptions): RequestHandler;
+  charge(options: ChargeOptions): RequestHandler & { _dualAmount?: string };
   /** Internal mppx instance (for discovery) */
   _mppx: ReturnType<typeof Mppx.create>;
+  /** Internal x402 config (for discovery) */
+  _x402Config: X402Config;
+  /** Resolved x402 asset address (for discovery) */
+  _x402Asset: string;
 };
 
-// ── Default USDC addresses per network ───────────────────────────────────
+// ── Default USDC addresses per CAIP-2 network ───────────────────────────
 
-const USDC_ADDRESSES: Record<string, string> = {
-  base: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
-  "base-sepolia": "0x036CbD53842c5426634e7929541eC2318f3dCF7e",
-  ethereum: "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
-  "ethereum-sepolia": "0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238",
-  polygon: "0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359",
-  solana: "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+const USDC_BY_NETWORK: Record<string, string> = {
+  "eip155:84532": "0x036CbD53842c5426634e7929541eC2318f3dCF7e", // Base Sepolia
+  "eip155:8453": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913", // Base Mainnet
+  "eip155:1": "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48", // Ethereum
 };
-
-function defaultUsdcForNetwork(network: string): string {
-  const addr = USDC_ADDRESSES[network];
-  if (!addr) throw new Error(`No default USDC address for network "${network}". Pass asset explicitly.`);
-  return addr;
-}
 
 // ── Main factory ─────────────────────────────────────────────────────────
 
+/**
+ * Create a dual-402 handler that accepts both x402 and MPP payments.
+ *
+ * @param config - Protocol-specific config for MPP and x402
+ * @returns Dual402Instance with a `.charge()` method for creating per-route middleware
+ */
 export function createDual402(config: Dual402Config): Dual402Instance {
   // Initialize mppx once — reused across all charge() calls
   const mppx = Mppx.create({
@@ -79,127 +80,168 @@ export function createDual402(config: Dual402Config): Dual402Instance {
       tempo.charge({
         currency: config.mpp.currency,
         recipient: config.mpp.recipient,
+        ...(config.mpp.testnet && { testnet: true }),
       }),
     ],
     secretKey: config.mpp.secretKey,
   });
 
-  const x402Asset = config.x402.asset ?? defaultUsdcForNetwork(config.x402.network);
+  const x402Asset = config.x402.asset ?? USDC_BY_NETWORK[config.x402.network];
+  if (!x402Asset) {
+    throw new Error(
+      `No default USDC for network "${config.x402.network}". Set x402.asset explicitly.`
+    );
+  }
 
   return {
     _mppx: mppx,
+    _x402Config: config.x402,
+    _x402Asset: x402Asset,
 
-    charge(options: ChargeOptions): RequestHandler {
-      // MPP charge handler (from mppx)
-      const mppCharge = (mppx as any).charge({
-        amount: options.amount,
-        description: options.description,
-      });
+    /**
+     * Returns Express middleware that gates a route behind payment.
+     * Accepts both x402 (PAYMENT-SIGNATURE) and MPP (Authorization: Payment).
+     *
+     * @param opts - { amount: string, description?: string }
+     */
+    charge(opts: ChargeOptions): RequestHandler & { _dualAmount?: string } {
+      const { amount, description } = opts;
 
-      // x402 amount in smallest unit (USDC has 6 decimals)
-      const amountRaw = Math.round(parseFloat(options.amount) * 1e6).toString();
+      // MPP charge handler — used for both credential verification and challenge generation
+      const mppCharge = (mppx as any).charge({ amount, description });
 
-      return async (req: Request, res: Response, next: NextFunction) => {
+      // x402 amount in smallest unit (USDC = 6 decimals)
+      const amountRaw = Math.round(parseFloat(amount) * 1e6).toString();
+
+      const handler = async (req: Request, res: Response, next: NextFunction) => {
         try {
-          // ── Path 1: x402 credential present ──
-          const x402Sig = req.headers["payment-signature"] as string | undefined;
+          // ── Path 1: x402 credential ──
+          // v2 header: PAYMENT-SIGNATURE, v1 legacy: X-PAYMENT
+          const x402Sig =
+            (req.headers["payment-signature"] as string | undefined) ??
+            (req.headers["x-payment"] as string | undefined);
+
           if (x402Sig) {
-            const verified = await verifyX402(x402Sig, config.x402.facilitatorUrl);
+            const verified = await x402Verify(
+              x402Sig,
+              config.x402.facilitatorUrl
+            );
             if (verified.valid) {
-              // Settle asynchronously — don't block the response
-              settleX402(x402Sig, config.x402.facilitatorUrl).catch((err) =>
-                console.error("x402 settle error:", err)
+              // Settle async — don't block the response
+              x402Settle(x402Sig, config.x402.facilitatorUrl).catch((err) =>
+                console.error("[dual402] x402 settle error:", err.message)
               );
+              // Attach receipt header if we got a tx hash back
+              if (verified.txHash) {
+                res.setHeader(
+                  "PAYMENT-RESPONSE",
+                  Buffer.from(
+                    JSON.stringify({
+                      success: true,
+                      txHash: verified.txHash,
+                      network: config.x402.network,
+                    })
+                  ).toString("base64")
+                );
+              }
               return next();
             }
             // Invalid x402 credential — fall through to 402
+            console.warn("[dual402] x402 verification failed");
           }
 
-          // ── Path 2: MPP credential present ──
-          const authHeader = req.headers["authorization"] as string | undefined;
-          if (authHeader && /^Payment\s/i.test(authHeader)) {
-            // Delegate entirely to mppx middleware
-            return mppCharge(req, res, next);
-          }
+          // ── Path 2 & 3: Delegate to mppx, inject x402 header on 402 ──
+          //
+          // Strategy: intercept mppx's res.status(402) call to add the
+          // x402 PAYMENT-REQUIRED header before the response is sent.
+          // This way mppx handles both MPP credentials and challenge
+          // generation, and we just layer x402 on top of the 402.
 
-          // ── Path 3: No credential — return 402 with BOTH challenges ──
-
-          // Get MPP challenge by running mppx against a synthetic Request
-          const syntheticReq = new globalThis.Request(
-            `${req.protocol}://${req.hostname}${req.originalUrl}`,
-            { method: req.method, headers: req.headers as Record<string, string> }
-          );
-          const mppResult = await (mppx as any).charge({ amount: options.amount })(syntheticReq);
-
-          res.status(402);
-
-          // MPP challenge → WWW-Authenticate header
-          if (mppResult.status === 402) {
-            const mppResponse = mppResult.challenge as globalThis.Response;
-            const wwwAuth = mppResponse.headers.get("WWW-Authenticate");
-            if (wwwAuth) res.setHeader("WWW-Authenticate", wwwAuth);
-          }
-
-          // x402 challenge → PAYMENT-REQUIRED header
-          const x402Requirements = {
-            x402Version: 1,
+          const resourceUrl = `${req.protocol}://${req.hostname}${req.originalUrl}`;
+          const paymentRequired = {
+            x402Version: 2,
             accepts: [
               {
                 scheme: "exact",
                 network: config.x402.network,
-                maxAmountRequired: amountRaw,
-                resource: `${req.protocol}://${req.hostname}${req.originalUrl}`,
+                amount: amountRaw,
                 asset: x402Asset,
                 payTo: config.x402.payTo,
-                description: options.description,
+                maxTimeoutSeconds: 300,
+                extra: {
+                  name: "USDC",
+                  version: "2",
+                  resourceUrl,
+                },
               },
             ],
+            resource: {
+              url: resourceUrl,
+              description: description || "",
+              mimeType: "application/json",
+            },
           };
-          res.setHeader(
-            "PAYMENT-REQUIRED",
-            Buffer.from(JSON.stringify(x402Requirements)).toString("base64")
-          );
 
-          res.json({
-            error: "Payment Required",
-            description: options.description,
-            protocols: ["mpp", "x402"],
-            amount: options.amount,
-            currency: "USDC",
-          });
+          // Intercept: when mppx sets status 402, also add x402 header
+          const origStatus = res.status.bind(res);
+          (res as any).status = (code: number) => {
+            if (code === 402) {
+              res.setHeader(
+                "PAYMENT-REQUIRED",
+                Buffer.from(JSON.stringify(paymentRequired)).toString("base64")
+              );
+            }
+            return origStatus(code);
+          };
+
+          return mppCharge(req, res, next);
         } catch (err) {
-          console.error("dual-402 error:", err);
+          console.error("[dual402] middleware error:", err);
           next(err);
         }
       };
+
+      // Stash amount for discovery to read
+      (handler as any)._dualAmount = amount;
+      return handler as RequestHandler & { _dualAmount?: string };
     },
   };
 }
 
-// ── x402 facilitator calls ───────────────────────────────────────────────
+// ── x402 facilitator HTTP calls ─────────────────────────────────────────
 
-async function verifyX402(
+async function x402Verify(
   paymentSignature: string,
   facilitatorUrl: string
-): Promise<{ valid: boolean }> {
-  const payload = JSON.parse(
-    Buffer.from(paymentSignature, "base64").toString("utf-8")
-  );
+): Promise<{ valid: boolean; txHash?: string }> {
+  try {
+    const payload = JSON.parse(
+      Buffer.from(paymentSignature, "base64").toString("utf-8")
+    );
 
-  const res = await fetch(`${facilitatorUrl}/verify`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ payload }),
-  });
+    const res = await fetch(`${facilitatorUrl}/verify`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ payload }),
+    });
 
-  if (!res.ok) return { valid: false };
-  return res.json() as Promise<{ valid: boolean }>;
+    if (!res.ok) {
+      const text = await res.text().catch(() => "");
+      console.warn(`[dual402] facilitator /verify ${res.status}: ${text}`);
+      return { valid: false };
+    }
+
+    return (await res.json()) as { valid: boolean; txHash?: string };
+  } catch (err: any) {
+    console.error("[dual402] x402 verify error:", err.message);
+    return { valid: false };
+  }
 }
 
-async function settleX402(
+async function x402Settle(
   paymentSignature: string,
   facilitatorUrl: string
-): Promise<{ success: boolean; txHash?: string }> {
+): Promise<any> {
   const payload = JSON.parse(
     Buffer.from(paymentSignature, "base64").toString("utf-8")
   );
@@ -210,8 +252,12 @@ async function settleX402(
     body: JSON.stringify({ payload }),
   });
 
-  if (!res.ok) return { success: false };
-  return res.json() as Promise<{ success: boolean; txHash?: string }>;
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(`facilitator /settle ${res.status}: ${text}`);
+  }
+
+  return res.json();
 }
 
 // ── Discovery ────────────────────────────────────────────────────────────
@@ -219,7 +265,7 @@ async function settleX402(
 export type DiscoveryRoute = {
   method: string;
   path: string;
-  handler: RequestHandler;
+  handler: RequestHandler & { _dualAmount?: string };
   summary: string;
 };
 
@@ -239,19 +285,34 @@ export function dualDiscovery(
   dual: Dual402Instance,
   config: DiscoveryConfig
 ): void {
-  // MPP discovery via mppx
+  // mppx discovery needs routes with native mppx charge handlers (for _internal metadata).
+  // Re-create mppx charge handlers purely for discovery — they aren't used for actual routing.
+  const mppxRoutes = config.routes.map((r) => ({
+    ...r,
+    handler: (dual._mppx as any).charge({
+      amount: (r.handler as any)._dualAmount ?? "0.01",
+      description: r.summary,
+    }),
+  }));
+
   mppxDiscovery(app, dual._mppx, {
     info: config.info,
     serviceInfo: config.serviceInfo,
-    routes: config.routes,
+    routes: mppxRoutes,
   });
 
-  // x402 discovery
+  // x402 discovery (resource list with url + description)
   app.get("/.well-known/x402", (req: Request, res: Response) => {
     const base = `${req.protocol}://${req.hostname}`;
     res.json({
-      version: 1,
-      resources: config.routes.map((r) => `${base}${r.path}`),
+      version: 2,
+      resources: config.routes.map((r) => ({
+        url: `${base}${r.path}`,
+        description: r.summary,
+      })),
+      payTo: dual._x402Config.payTo,
+      network: dual._x402Config.network,
+      asset: dual._x402Asset,
     });
   });
 }

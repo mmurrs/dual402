@@ -1,16 +1,16 @@
 /**
  * FindMeA — NYC Transit API
  *
- * Migration sketch: MPP-only → dual-402 (x402 + MPP)
+ * Migration sketch: MPP-only -> dual-402 (x402 + MPP)
  *
  * What changed:
- *   - `mppx/express` → `dual-402/express`
- *   - `Mppx.create()` → `createDual402()`  (one-time setup with both protocol configs)
- *   - `mppx.charge()` → `dual.charge()`    (same call signature, adds x402 under the hood)
- *   - `discovery()`   → `dualDiscovery()`   (mounts /openapi.json AND /.well-known/x402)
+ *   - `mppx/express` -> `dual-402/express`
+ *   - `Mppx.create()` -> `createDual402()`  (one-time setup with both protocol configs)
+ *   - `mppx.charge()` -> `dual.charge()`    (same call signature, adds x402 under the hood)
+ *   - `discovery()`   -> `dualDiscovery()`   (mounts /openapi.json AND /.well-known/x402)
  *   - Handler functions: UNCHANGED
  *
- * New env vars: X402_PAYEE_ADDRESS, X402_NETWORK, X402_FACILITATOR_URL
+ * New env vars: X402_PAYEE_ADDRESS, X402_NETWORK, X402_FACILITATOR_URL, MPP_TESTNET
  */
 
 import express from "express";
@@ -18,10 +18,10 @@ import { fileURLToPath } from "url";
 import path from "path";
 import { createRequire } from "module";
 
-// ─── BEFORE ───
+// --- BEFORE ---
 // import { Mppx, tempo, discovery } from "mppx/express";
 
-// ─── AFTER ───
+// --- AFTER ---
 import { createDual402, dualDiscovery } from "dual-402/express";
 
 const require = createRequire(import.meta.url);
@@ -45,7 +45,7 @@ app.use((req, res, next) => {
   next();
 });
 
-// ─── Payment setup ───
+// --- Payment setup ---
 //
 // BEFORE: Two separate concepts (Mppx.create + mppx.charge)
 // AFTER:  One setup, shared price, protocol-specific config
@@ -55,10 +55,11 @@ const dual = createDual402({
     currency: process.env.USDC_TEMPO,
     recipient: process.env.MPP_RECIPIENT,
     secretKey: process.env.MPP_SECRET_KEY,
+    testnet: process.env.MPP_TESTNET === "true",
   },
   x402: {
     payTo: process.env.X402_PAYEE_ADDRESS,
-    network: process.env.X402_NETWORK || "base-sepolia",
+    network: process.env.X402_NETWORK || "eip155:84532",
     facilitatorUrl:
       process.env.X402_FACILITATOR_URL || "https://x402.org/facilitator",
   },
@@ -80,17 +81,17 @@ const chargeBus = dual.charge({
   description: "Bus arrival lookup",
 });
 
-// ─── Discovery ───
+// --- Discovery ---
 //
-// BEFORE: discovery(app, mppx, { ... })  → only /openapi.json
-// AFTER:  dualDiscovery(app, dual, { ... }) → /openapi.json + /.well-known/x402
+// BEFORE: discovery(app, mppx, { ... })  -> only /openapi.json
+// AFTER:  dualDiscovery(app, dual, { ... }) -> /openapi.json + /.well-known/x402
 
 dualDiscovery(app, dual, {
   info: {
     title: "FindMeA — NYC Transit API",
     description:
       "Real-time NYC transit for agents. Citi Bike stations, subway arrivals, and bus predictions — $0.02 per lookup via MPP or x402.",
-    version: "2.0.0",
+    version: "2.1.0",
   },
   serviceInfo: {
     categories: ["transportation", "transit", "nyc", "citibike", "subway", "bus"],
@@ -102,33 +103,33 @@ dualDiscovery(app, dual, {
       path: "/citibike/nearest",
       handler: chargeCitibike,
       summary:
-        "Find nearest Citi Bike stations with available bikes, e-bike counts, and walking time.",
+        "Find nearest Citi Bike stations with available bikes, e-bike counts, and walking time. Query params: lat (required), lng (required), limit (optional, default 3, max 10).",
     },
     {
       method: "get",
       path: "/citibike/dock",
       handler: chargeCitibike,
       summary:
-        "Find nearest Citi Bike stations with available docks for parking.",
+        "Find nearest Citi Bike stations with available docks for parking. Query params: lat (required), lng (required), limit (optional, default 3, max 10).",
     },
     {
       method: "get",
       path: "/subway/nearest",
       handler: chargeSubway,
       summary:
-        "Find nearest subway stations with real-time train arrivals.",
+        "Find nearest subway stations with real-time train arrivals. Returns upcoming trains with ETAs, lines, and direction. Query params: lat (required), lng (required), limit (optional, default 3, max 10).",
     },
     {
       method: "get",
       path: "/bus/nearest",
       handler: chargeBus,
       summary:
-        "Find nearest bus stops with real-time arrival predictions.",
+        "Find nearest bus stops with real-time arrival predictions. Returns routes, destinations, and ETAs. Query params: lat (required), lng (required), limit (optional, default 3, max 10).",
     },
   ],
 });
 
-// ─── Route handlers (UNCHANGED from MPP-only version) ───
+// --- Route handlers (UNCHANGED from MPP-only version) ---
 
 function haversine(lat1, lon1, lat2, lon2) {
   const R = 6_371_000;
@@ -178,7 +179,7 @@ app.get("/bus/nearest", validateLookupQuery, chargeBus, async (req, res) => {
   res.json({ results: [] });
 });
 
-// ─── Static routes (unchanged) ───
+// --- Static routes (unchanged) ---
 
 app.get("/", (req, res) => {
   res.sendFile(path.join(__dirname, "index.html"));
