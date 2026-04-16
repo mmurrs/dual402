@@ -10,15 +10,15 @@
  */
 
 import type { Request, Response, NextFunction, RequestHandler, Express } from "express";
-import { Mppx, tempo, discovery as mppxDiscovery } from "mppx/express";
+import { Mppx, tempo } from "mppx/express";
 
 // ── Types ────────────────────────────────────────────────────────────────
 
 export type MppConfig = {
   /** Tempo USDC currency address */
-  currency: string;
+  currency: `0x${string}`;
   /** Wallet address receiving MPP payments */
-  recipient: string;
+  recipient: `0x${string}`;
   /** HMAC secret for stateless challenge verification */
   secretKey: string;
   /** Enable MPP testnet mode */
@@ -27,13 +27,13 @@ export type MppConfig = {
 
 export type X402Config = {
   /** Wallet address receiving x402 payments (can be different chain than MPP) */
-  payTo: string;
+  payTo: `0x${string}`;
   /** CAIP-2 chain identifier: "eip155:84532", "eip155:8453", "eip155:1", etc. */
   network: string;
   /** Facilitator URL for verify + settle (e.g., "https://x402.org/facilitator") */
   facilitatorUrl: string;
   /** Token contract address. Defaults to USDC on the specified network. */
-  asset?: string;
+  asset?: `0x${string}`;
 };
 
 export type Dual402Config = {
@@ -50,7 +50,7 @@ export type Dual402Instance = {
   /** Create a charge middleware for a specific route */
   charge(options: ChargeOptions): RequestHandler & { _dualAmount?: string };
   /** Internal mppx instance (for discovery) */
-  _mppx: ReturnType<typeof Mppx.create>;
+  _mppx: any;
   /** Internal x402 config (for discovery) */
   _x402Config: X402Config;
   /** Resolved x402 asset address (for discovery) */
@@ -59,7 +59,7 @@ export type Dual402Instance = {
 
 // ── Default USDC addresses per CAIP-2 network ───────────────────────────
 
-const USDC_BY_NETWORK: Record<string, string> = {
+const USDC_BY_NETWORK: Record<string, `0x${string}`> = {
   "eip155:84532": "0x036CbD53842c5426634e7929541eC2318f3dCF7e", // Base Sepolia
   "eip155:8453": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913", // Base Mainnet
   "eip155:1": "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48", // Ethereum
@@ -91,6 +91,10 @@ export function createDual402(config: Dual402Config): Dual402Instance {
     throw new Error(
       `No default USDC for network "${config.x402.network}". Set x402.asset explicitly.`
     );
+  }
+  // Validate 0x prefix for x402 asset address
+  if (!x402Asset.startsWith("0x")) {
+    throw new Error(`x402 asset address must start with 0x: ${x402Asset}`);
   }
 
   return {
@@ -267,52 +271,136 @@ export type DiscoveryRoute = {
   path: string;
   handler: RequestHandler & { _dualAmount?: string };
   summary: string;
+  operationId: string;
+  tags?: string[];
+  /** Query parameters for GET routes */
+  parameters?: Array<{
+    name: string;
+    in: "query";
+    required?: boolean;
+    schema: any;
+    description?: string;
+  }>;
+  /** Request body schema for POST routes */
+  requestBody?: {
+    required?: boolean;
+    content: {
+      [mediaType: string]: {
+        schema: any;
+      };
+    };
+  };
+  /** Response schema (optional, defaults to generic { results: [] } shape) */
+  responseSchema?: any;
 };
 
 export type DiscoveryConfig = {
-  info?: { title: string; description: string; version: string };
+  info?: {
+    title: string;
+    description: string;
+    version: string;
+    /** Agent-friendly usage instructions */
+    "x-guidance"?: string;
+  };
   serviceInfo?: { categories: string[]; docs?: { homepage: string } };
+  /** Ownership proofs for AgentCash (can be empty array) */
+  ownershipProofs?: any[];
   routes: DiscoveryRoute[];
 };
 
 /**
  * Mounts both discovery endpoints:
- *   GET /openapi.json     — OpenAPI spec with MPP payment extensions
- *   GET /.well-known/x402 — Resource list for x402 crawlers
+ *   GET /openapi.json     — AgentCash-compliant OpenAPI 3.1.0 spec
+ *   GET /.well-known/x402 — Resource list for x402 crawlers (v1 format)
  */
 export function dualDiscovery(
   app: Express,
   dual: Dual402Instance,
   config: DiscoveryConfig
 ): void {
-  // mppx discovery needs routes with native mppx charge handlers (for _internal metadata).
-  // Re-create mppx charge handlers purely for discovery — they aren't used for actual routing.
-  const mppxRoutes = config.routes.map((r) => ({
-    ...r,
-    handler: (dual._mppx as any).charge({
-      amount: (r.handler as any)._dualAmount ?? "0.01",
-      description: r.summary,
-    }),
-  }));
+  const paths: Record<string, any> = {};
 
-  mppxDiscovery(app, dual._mppx, {
-    info: config.info,
-    serviceInfo: config.serviceInfo,
-    routes: mppxRoutes,
+  for (const r of config.routes) {
+    const amount = (r.handler as any)._dualAmount ?? "0.02";
+
+    const operation: any = {
+      operationId: r.operationId,
+      summary: r.summary,
+      tags: r.tags ?? [],
+      "x-payment-info": {
+        price: {
+          mode: "fixed",
+          currency: "USD",
+          amount: parseFloat(amount).toFixed(6),
+        },
+        protocols: [
+          { x402: {} },
+          { mpp: { method: "", intent: "", currency: "" } },
+        ],
+      },
+      responses: {
+        200: {
+          description: "Successful response",
+          content: {
+            "application/json": {
+              schema: r.responseSchema ?? {
+                type: "object",
+                properties: {
+                  results: { type: "array", items: { type: "object" } },
+                },
+                required: ["results"],
+              },
+            },
+          },
+        },
+        402: { description: "Payment Required" },
+      },
+    };
+
+    // Input schema — query parameters for GET routes
+    if (r.parameters?.length) {
+      operation.parameters = r.parameters;
+    }
+
+    // Input schema — request body for POST routes
+    if (r.requestBody) {
+      operation.requestBody = r.requestBody;
+    }
+
+    paths[r.path] = { [r.method]: operation };
+  }
+
+  const spec: any = {
+    openapi: "3.1.0",
+    info: {
+      title: config.info?.title ?? "Dual-402 API",
+      version: config.info?.version ?? "1.0.0",
+      description: config.info?.description ?? "",
+      ...(config.info?.["x-guidance"] && {
+        "x-guidance": config.info["x-guidance"],
+      }),
+    },
+    "x-discovery": {
+      ownershipProofs: config.ownershipProofs ?? [],
+    },
+    paths,
+  };
+
+  if (config.serviceInfo) {
+    spec["x-service-info"] = config.serviceInfo;
+  }
+
+  app.get("/openapi.json", (req: Request, res: Response) => {
+    res.json(spec);
   });
 
-  // x402 discovery (resource list with url + description)
+  // /.well-known/x402 v1 — simple resource list
   app.get("/.well-known/x402", (req: Request, res: Response) => {
-    const base = `${req.protocol}://${req.hostname}`;
     res.json({
-      version: 2,
-      resources: config.routes.map((r) => ({
-        url: `${base}${r.path}`,
-        description: r.summary,
-      })),
-      payTo: dual._x402Config.payTo,
-      network: dual._x402Config.network,
-      asset: dual._x402Asset,
+      version: 1,
+      resources: config.routes.map(
+        (r) => `${r.method.toUpperCase()} ${r.path}`
+      ),
     });
   });
 }

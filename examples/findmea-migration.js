@@ -85,6 +85,9 @@ const chargeBus = dual.charge({
 //
 // BEFORE: discovery(app, mppx, { ... })  -> only /openapi.json
 // AFTER:  dualDiscovery(app, dual, { ... }) -> /openapi.json + /.well-known/x402
+//
+// New in dual-402 v0.2+: AgentCash-compliant OpenAPI 3.1.0 spec
+// Required fields per route: operationId, tags (optional but recommended), parameters (for GET)
 
 dualDiscovery(app, dual, {
   info: {
@@ -92,39 +95,141 @@ dualDiscovery(app, dual, {
     description:
       "Real-time NYC transit for agents. Citi Bike stations, subway arrivals, and bus predictions — $0.02 per lookup via MPP or x402.",
     version: "2.1.0",
+    "x-guidance":
+      "All endpoints require lat/lng coordinates. Use limit parameter to control result count (default 3, max 10). Each request costs $0.02 via MPP or x402 payment.",
   },
   serviceInfo: {
     categories: ["transportation", "transit", "nyc", "citibike", "subway", "bus"],
     docs: { homepage: "https://findmea-nyc.vercel.app" },
   },
+  ownershipProofs: [],
   routes: [
     {
       method: "get",
       path: "/citibike/nearest",
       handler: chargeCitibike,
+      operationId: "findNearestCitibikeBikes",
+      tags: ["citibike", "bikes"],
       summary:
-        "Find nearest Citi Bike stations with available bikes, e-bike counts, and walking time. Query params: lat (required), lng (required), limit (optional, default 3, max 10).",
+        "Find nearest Citi Bike stations with available bikes, e-bike counts, and walking time.",
+      parameters: [
+        {
+          name: "lat",
+          in: "query",
+          required: true,
+          schema: { type: "number", format: "float" },
+          description: "Latitude coordinate",
+        },
+        {
+          name: "lng",
+          in: "query",
+          required: true,
+          schema: { type: "number", format: "float" },
+          description: "Longitude coordinate",
+        },
+        {
+          name: "limit",
+          in: "query",
+          required: false,
+          schema: { type: "integer", minimum: 1, maximum: 10, default: 3 },
+          description: "Number of results to return",
+        },
+      ],
     },
     {
       method: "get",
       path: "/citibike/dock",
       handler: chargeCitibike,
-      summary:
-        "Find nearest Citi Bike stations with available docks for parking. Query params: lat (required), lng (required), limit (optional, default 3, max 10).",
+      operationId: "findNearestCitibikeDocks",
+      tags: ["citibike", "docks"],
+      summary: "Find nearest Citi Bike stations with available docks for parking.",
+      parameters: [
+        {
+          name: "lat",
+          in: "query",
+          required: true,
+          schema: { type: "number", format: "float" },
+          description: "Latitude coordinate",
+        },
+        {
+          name: "lng",
+          in: "query",
+          required: true,
+          schema: { type: "number", format: "float" },
+          description: "Longitude coordinate",
+        },
+        {
+          name: "limit",
+          in: "query",
+          required: false,
+          schema: { type: "integer", minimum: 1, maximum: 10, default: 3 },
+          description: "Number of results to return",
+        },
+      ],
     },
     {
       method: "get",
       path: "/subway/nearest",
       handler: chargeSubway,
+      operationId: "findNearestSubwayArrivals",
+      tags: ["subway", "mta"],
       summary:
-        "Find nearest subway stations with real-time train arrivals. Returns upcoming trains with ETAs, lines, and direction. Query params: lat (required), lng (required), limit (optional, default 3, max 10).",
+        "Find nearest subway stations with real-time train arrivals. Returns upcoming trains with ETAs, lines, and direction.",
+      parameters: [
+        {
+          name: "lat",
+          in: "query",
+          required: true,
+          schema: { type: "number", format: "float" },
+          description: "Latitude coordinate",
+        },
+        {
+          name: "lng",
+          in: "query",
+          required: true,
+          schema: { type: "number", format: "float" },
+          description: "Longitude coordinate",
+        },
+        {
+          name: "limit",
+          in: "query",
+          required: false,
+          schema: { type: "integer", minimum: 1, maximum: 10, default: 3 },
+          description: "Number of results to return",
+        },
+      ],
     },
     {
       method: "get",
       path: "/bus/nearest",
       handler: chargeBus,
+      operationId: "findNearestBusArrivals",
+      tags: ["bus", "mta"],
       summary:
-        "Find nearest bus stops with real-time arrival predictions. Returns routes, destinations, and ETAs. Query params: lat (required), lng (required), limit (optional, default 3, max 10).",
+        "Find nearest bus stops with real-time arrival predictions. Returns routes, destinations, and ETAs.",
+      parameters: [
+        {
+          name: "lat",
+          in: "query",
+          required: true,
+          schema: { type: "number", format: "float" },
+          description: "Latitude coordinate",
+        },
+        {
+          name: "lng",
+          in: "query",
+          required: true,
+          schema: { type: "number", format: "float" },
+          description: "Longitude coordinate",
+        },
+        {
+          name: "limit",
+          in: "query",
+          required: false,
+          schema: { type: "integer", minimum: 1, maximum: 10, default: 3 },
+          description: "Number of results to return",
+        },
+      ],
     },
   ],
 });
