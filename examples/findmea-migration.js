@@ -4,7 +4,7 @@
  * Migration sketch: MPP-only -> dual-402 (x402 + MPP)
  *
  * What changed:
- *   - `mppx/express` -> `dual-402/express`
+ *   - `mppx/express` -> `dual-402`
  *   - `Mppx.create()` -> `createDual402()`  (one-time setup with both protocol configs)
  *   - `mppx.charge()` -> `dual.charge()`    (same call signature, adds x402 under the hood)
  *   - `discovery()`   -> `dualDiscovery()`   (mounts /openapi.json AND /.well-known/x402)
@@ -22,7 +22,7 @@ import { createRequire } from "module";
 // import { Mppx, tempo, discovery } from "mppx/express";
 
 // --- AFTER ---
-import { createDual402, dualDiscovery } from "dual-402/express";
+import { createDual402, dualDiscovery } from "dual-402";
 
 const require = createRequire(import.meta.url);
 const GtfsRealtimeBindings = require("gtfs-realtime-bindings");

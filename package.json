@@ -6,14 +6,28 @@
   "main": "dist/express.js",
   "types": "dist/express.d.ts",
   "exports": {
+    ".": {
+      "import": "./dist/express.js",
+      "types": "./dist/express.d.ts"
+    },
     "./express": {
       "import": "./dist/express.js",
       "types": "./dist/express.d.ts"
     }
   },
+  "files": [
+    "dist",
+    "README.md",
+    "ARCHITECTURE.md",
+    "LICENSE"
+  ],
   "scripts": {
     "build": "tsc",
-    "dev": "tsc --watch"
+    "dev": "tsc --watch",
+    "typecheck": "tsc --noEmit",
+    "test": "npm run build && node --test tests/dual402.smoke.mjs",
+    "check": "npm run typecheck && npm run test",
+    "prepack": "npm run build"
   },
   "dependencies": {
     "mppx": "^0.4.11"
@@ -26,5 +40,20 @@
     "typescript": "^5.7.0"
   },
   "license": "MIT",
-  "private": true
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/mmurrs/dual-402.git"
+  },
+  "homepage": "https://github.com/mmurrs/dual-402#readme",
+  "bugs": {
+    "url": "https://github.com/mmurrs/dual-402/issues"
+  },
+  "keywords": [
+    "x402",
+    "mpp",
+    "express",
+    "payments",
+    "tempo",
+    "agentcash"
+  ]
 }
