@@ -361,7 +361,7 @@ app.get("/citibike/nearest", validateLookupQuery, chargeCitibike, handler);
 ### After (x402 + MPP)
 
 ```js
-import { createDual402, dualDiscovery } from "dual-402/express";
+import { createDual402, dualDiscovery } from "dual-402";
 
 const dual = createDual402({
   mpp: {
