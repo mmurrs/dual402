@@ -1,17 +1,12 @@
 # dual402
 
-Express middleware for charging the same route via both x402 and MPP.
+One Express middleware. Accepts both x402 (Base USDC) and MPP (Tempo USDC) on every route. One 402 response carries both challenges; the server accepts whichever signed credential comes back.
 
-## What this solves
+```bash
+npm install dual402
+```
 
-x402 (Coinbase) and MPP (Tempo) are two non-interoperable payment protocols competing for the same space: pay-per-request APIs for AI agents. If you build on only one, you cut your addressable clients in half. If you try to bolt both on naively, the first middleware that sees an unauthenticated request returns 402 and blocks the other protocol's challenge from ever being sent.
-
-dual402 is the one middleware that accepts both. It emits a single `402` response with both protocol challenges attached, then accepts whichever signed credential comes back:
-
-- `WWW-Authenticate: Payment ...` for MPP clients
-- `PAYMENT-REQUIRED: <base64-json>` for x402 clients
-
-One route definition. Both client ecosystems. Works with AgentCash, `@x402/fetch`, `mppx`, and any compliant client out of the box.
+Starter template: https://github.com/mmurrs/dual402-starter
 
 ## Scope
 
