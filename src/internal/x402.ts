@@ -3,6 +3,7 @@ import type { Request, Response } from "express";
 import { generateCdpJwt } from "./cdp.js";
 
 export type JsonObject = Record<string, unknown>;
+/** JSON Schema object (draft 2020-12 recommended) used for request/response hints in discovery. */
 export type JsonSchema = Record<string, unknown>;
 
 export type PaymentRequirements = {
@@ -63,6 +64,10 @@ export function sanitizeLogValue(value: unknown, limit = 80): string {
   return str.length > limit ? `${str.slice(0, limit)}...` : str;
 }
 
+/**
+ * Shorten a hex string for safe logging. `0xabc...1234` by default.
+ * Use for payer/wallet addresses and tx hashes in public logs.
+ */
 export function maskHex(
   value: unknown,
   { head = 6, tail = 4 }: { head?: number; tail?: number } = {},

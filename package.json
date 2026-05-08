@@ -1,6 +1,6 @@
 {
   "name": "dual402",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Express middleware that accepts both x402 and MPP payments on the same route",
   "type": "module",
   "main": "dist/express.js",

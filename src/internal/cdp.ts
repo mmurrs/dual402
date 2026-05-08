@@ -26,6 +26,11 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
+/**
+ * Parse a CDP API key secret into a Node crypto KeyObject. Accepts PEM blocks,
+ * PKCS#8 DER (48-byte base64), or raw Ed25519 seeds (32 or 64 bytes base64).
+ * Throws `cdp_key_unrecognized: ...` with the reason on unexpected formats.
+ */
 export function parseCdpPrivateKey(secret: string): crypto.KeyObject {
   const trimmed = String(secret).trim();
 
