@@ -361,7 +361,7 @@ app.get("/citibike/nearest", validateLookupQuery, chargeCitibike, handler);
 ### After (x402 + MPP)
 
 ```js
-import { createDual402, dualDiscovery } from "dual-402";
+import { createDual402, dualDiscovery } from "dual402";
 
 const dual = createDual402({
   mpp: {
@@ -408,7 +408,7 @@ X402_NETWORK=eip155:84532     # CAIP-2 format (Base Sepolia)
 2. **Receipt forwarding** -- Should the middleware set both receipt headers on success? Or only the one matching the protocol that was used?
 3. **Cross-chain pricing** -- Amount is shared, but gas costs differ. Should the x402 price include a gas-cost buffer?
 4. **Session support** -- MPP supports sessions (pre-funded channels with lightweight vouchers). x402 is per-request only. How should sessions work in dual mode?
-5. **Compose API** -- mppx already has `compose()` for multiple payment methods. Should dual-402 hook into that, or wrap it?
+5. **Compose API** -- mppx already has `compose()` for multiple payment methods. Should dual402 hook into that, or wrap it?
 
 ## Roadmap
 

@@ -1,5 +1,5 @@
 /**
- * dual-402/express
+ * dual402/express
  *
  * Public entrypoint for the dual x402 + MPP middleware.
  */

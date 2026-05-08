@@ -1,10 +1,10 @@
 /**
  * FindMeA — NYC Transit API
  *
- * Migration sketch: MPP-only -> dual-402 (x402 + MPP)
+ * Migration sketch: MPP-only -> dual402 (x402 + MPP)
  *
  * What changed:
- *   - `mppx/express` -> `dual-402`
+ *   - `mppx/express` -> `dual402`
  *   - `Mppx.create()` -> `createDual402()`  (one-time setup with both protocol configs)
  *   - `mppx.charge()` -> `dual.charge()`    (same call signature, adds x402 under the hood)
  *   - `discovery()`   -> `dualDiscovery()`   (mounts /openapi.json AND /.well-known/x402)
@@ -22,7 +22,7 @@ import { createRequire } from "module";
 // import { Mppx, tempo, discovery } from "mppx/express";
 
 // --- AFTER ---
-import { createDual402, dualDiscovery } from "dual-402";
+import { createDual402, dualDiscovery } from "dual402";
 
 const require = createRequire(import.meta.url);
 const GtfsRealtimeBindings = require("gtfs-realtime-bindings");
@@ -86,7 +86,7 @@ const chargeBus = dual.charge({
 // BEFORE: discovery(app, mppx, { ... })  -> only /openapi.json
 // AFTER:  dualDiscovery(app, dual, { ... }) -> /openapi.json + /.well-known/x402
 //
-// New in dual-402 v0.2+: AgentCash-compliant OpenAPI 3.1.0 spec
+// New in dual402 v0.2+: AgentCash-compliant OpenAPI 3.1.0 spec
 // Required fields per route: operationId, tags (optional but recommended), parameters (for GET)
 
 dualDiscovery(app, dual, {
