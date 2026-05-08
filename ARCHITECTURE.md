@@ -22,7 +22,7 @@ Verification:   External facilitator               Stateless HMAC + on-chain
 
 Discovery:      /.well-known/x402                  /openapi.json (OpenAPI spec)
 
-Chains:         Base, Solana, Polygon, 15+         Tempo (primary), Solana plugin
+Chains:         EVM networks via configured facilitator  Tempo (primary)
 
 Spec:           github.com/coinbase/x402           IETF draft + github.com/tempoxyz/mpp-specs
                 Linux Foundation (April 2026)
@@ -204,7 +204,7 @@ export function createDual402(config: Dual402Config): Dual402Instance {
                 payTo: config.x402.payTo,
                 maxTimeoutSeconds: 300,
                 extra: {
-                  name: "USDC",
+                  name: "USD Coin",
                   version: "2",
                   resourceUrl,
                 },
