@@ -18,15 +18,9 @@ Protocol references: [x402.org](https://x402.org) · [mpp.dev](https://mpp.dev).
 
 This package is opinionated toward the production patterns used in `NYCTransitLive-x402`: strict local amount/payee checks, CDP auth support for Base mainnet, minimal static discovery, and challenge metadata that helps AgentCash-style clients retry correctly.
 
-## Install
-
-```bash
-npm install dual402 express mppx
-```
-
-`express` is a peer dependency.
-
 ## Quickstart
+
+Three pieces: create the middleware, attach it to a route, describe the route for discovery.
 
 ```js
 import express from "express";
@@ -34,73 +28,34 @@ import { createDual402, dualDiscovery } from "dual402";
 
 const app = express();
 
+// 1. One-time setup
 const dual = createDual402({
-  mpp: {
-    currency: process.env.USDC_TEMPO,
-    recipient: process.env.MPP_RECIPIENT,
-    secretKey: process.env.MPP_SECRET_KEY,
-    testnet: process.env.MPP_TESTNET === "true",
-  },
-  x402: {
-    payTo: process.env.X402_PAYEE_ADDRESS,
-    network: process.env.X402_NETWORK ?? "eip155:84532",
-    facilitatorUrl:
-      process.env.X402_FACILITATOR_URL ?? "https://x402.org/facilitator",
-  },
+  mpp:  { currency, recipient, secretKey },
+  x402: { payTo, network, facilitatorUrl },
 });
 
-const chargeQuote = dual.charge({
-  amount: "0.02",
-  description: "Quote lookup",
-});
+// 2. Attach per-route charge middleware
+const chargeQuote = dual.charge({ amount: "0.02", description: "Quote lookup" });
+app.get("/quote", chargeQuote, (req, res) => res.json({ price: 42 }));
 
-app.get("/quote", chargeQuote, (req, res) => {
-  res.json({ results: [{ price: 42 }] });
-});
-
+// 3. Expose /openapi.json and /.well-known/x402
 dualDiscovery(app, dual, {
-  info: {
-    title: "Example API",
-    version: "1.0.0",
-    description: "Paid API with dual x402 + MPP support.",
-    "x-guidance": "Call GET /quote. Expect a 402 until payment is attached.",
-  },
-  routes: [
-    {
-      method: "get",
-      path: "/quote",
-      handler: chargeQuote,
-      operationId: "getQuote",
-      summary: "Fetch the latest quote",
-      parameters: [
-        {
-          name: "symbol",
-          in: "query",
-          required: true,
-          schema: { type: "string" },
-          description: "Ticker symbol",
-        },
-      ],
-      responseSchema: {
-        type: "object",
-        properties: {
-          results: {
-            type: "array",
-            items: {
-              type: "object",
-              properties: {
-                price: { type: "number" },
-              },
-              required: ["price"],
-            },
-          },
-        },
-        required: ["results"],
-      },
-    },
-  ],
+  info: { title: "Example API", version: "1.0.0" },
+  routes: [{ method: "get", path: "/quote", handler: chargeQuote }],
 });
 ```
+
+That's the whole surface. Every unauthenticated request gets a 402 with both payment challenges; any compliant client pays and proceeds.
+
+Looking for a runnable project you can deploy? The [starter](https://github.com/mmurrs/dual402-starter) wires this up with a Dockerfile and a one-command EigenCompute deploy.
+
+## Install
+
+```bash
+npm install dual402 express mppx
+```
+
+`express` is a peer dependency. `mppx` is the MPP reference client used under the hood.
 
 ## Base Mainnet
 
