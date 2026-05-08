@@ -28,52 +28,91 @@ export type { JsonSchema } from "./internal/x402.js";
 export { maskHex } from "./internal/x402.js";
 export { parseCdpPrivateKey } from "./internal/cdp.js";
 
+/** MPP (Tempo USDC) configuration — passed to {@link createDual402}. */
 export type MppConfig = {
+  /** Tempo USDC token contract address. Mainnet `0x20C0...E8b50`, testnet `0x20c0...0000`. */
   currency: `0x${string}`;
+  /** EVM address that receives MPP payments. Must not equal the payer's wallet. */
   recipient: `0x${string}`;
+  /** HMAC key used by mppx to sign/verify payment challenges. 32+ random bytes. */
   secretKey: string;
+  /** Hostname advertised in MPP `WWW-Authenticate` challenges. Defaults to the request host; set when behind a proxy. */
   realm?: string;
+  /** Use Tempo testnet (chain 42431) instead of mainnet (chain 4217). */
   testnet?: boolean;
 };
 
+/** Coinbase Developer Platform credentials for the CDP-hosted x402 facilitator. Required on Base mainnet. */
 export type CdpAuth = {
+  /** UUID from portal.cdp.coinbase.com (or `organizations/.../apiKeys/...` path). */
   apiKeyId: string;
+  /** Base64 Ed25519 key or PEM block. Keep out of logs. */
   apiKeySecret: string;
 };
 
+/** x402 (EVM USDC) configuration — passed to {@link createDual402}. */
 export type X402Config = {
+  /** EVM address that receives x402 payments. Must not equal the payer's wallet. */
   payTo: `0x${string}`;
+  /** CAIP-2 chain ID. `eip155:8453` for Base mainnet, `eip155:84532` for Base Sepolia. */
   network: string;
+  /** Facilitator `/verify` + `/settle` endpoint. Mainnet: `https://api.cdp.coinbase.com/platform/v2/x402` (needs `cdpAuth`). */
   facilitatorUrl: string;
+  /** USDC contract address. Defaults to the known USDC for `network` if unset. */
   asset?: `0x${string}`;
+  /** EIP-712 domain for the asset. Defaults to `{ name: "USD Coin", version: "2" }` — do not override unless you know what you're doing. */
   extra?: { name: string; version: string };
+  /** Facilitator fetch timeout in ms. Default 5000, override via `X402_FACILITATOR_TIMEOUT_MS`. */
   timeoutMs?: number;
+  /** CDP credentials. Required when `facilitatorUrl` is CDP-hosted. */
   cdpAuth?: CdpAuth;
 };
 
+/** Full configuration for {@link createDual402}. */
 export type Dual402Config = {
   mpp: MppConfig;
   x402: X402Config;
+  /**
+   * Optional hook called after facilitator-side verify succeeds but before `next()`.
+   * Return `false` to reject the payment; useful for replay protection or per-caller policy.
+   */
   onVerify?: (
     payload: JsonObject,
     ctx: { route: string; amount: string },
   ) => void | boolean | Promise<void | boolean>;
 };
 
+/** Per-route options for {@link Dual402Instance.charge}. */
 export type ChargeOptions = {
+  /** Price in USDC as a decimal string. E.g. `"0.02"` = 2 cents. */
   amount: string;
+  /** Human-readable description. ASCII only — ends up in `WWW-Authenticate` header values. */
   description?: string;
+  /** Block on x402 settlement before returning the response. Default is fire-and-forget. */
   waitForSettle?: boolean;
 };
 
+/**
+ * One paid route, as described to {@link dualDiscovery}. The `handler` must be the same
+ * charge middleware passed to `app.get(...)` / `app.post(...)` — the discovery layer reads
+ * amount/description metadata off it.
+ */
 export type DiscoveryRoute = {
+  /** HTTP method, lowercase. */
   method: string;
+  /** Absolute path starting with `/`. */
   path: string;
+  /** Middleware returned by {@link Dual402Instance.charge}. */
   handler: DualChargeHandler;
+  /** Short imperative summary for OpenAPI. */
   summary: string;
+  /** Unique camelCase operation ID for OpenAPI. */
   operationId: string;
+  /** Longer description. */
   description?: string;
+  /** OpenAPI tags for grouping. */
   tags?: string[];
+  /** Query/path parameters for GET routes. */
   parameters?: Array<{
     name: string;
     in: "query";
@@ -81,6 +120,7 @@ export type DiscoveryRoute = {
     schema: JsonSchema;
     description?: string;
   }>;
+  /** Full OpenAPI `requestBody` object. Use `requestBodySchema` for the common `application/json` case. */
   requestBody?: {
     required?: boolean;
     content: {
@@ -89,20 +129,29 @@ export type DiscoveryRoute = {
       };
     };
   };
+  /** Shortcut for `application/json` request body. */
   requestBodySchema?: JsonSchema;
+  /** Whether the request body is required. Defaults to `true` when `requestBodySchema` is set. */
   requestBodyRequired?: boolean;
+  /** JSON Schema for the successful response. Threaded into the 402 challenge as a Bazaar schema hint. */
   responseSchema?: JsonSchema;
 };
 
+/** Config for {@link dualDiscovery}. */
 export type DiscoveryConfig = {
+  /** OpenAPI `info` block. */
   info?: {
     title: string;
     description: string;
     version: string;
+    /** Free-form guidance for agent clients — e.g. worked examples, which route to pick when. */
     "x-guidance"?: string;
   };
+  /** Additional `info.x-service` metadata (categories, keywords) for aggregator discovery. */
   serviceInfo?: Record<string, unknown>;
+  /** Optional array of signed proofs that this service owns the advertised wallets. */
   ownershipProofs?: JsonObject[];
+  /** Every paid route the service exposes. */
   routes: DiscoveryRoute[];
 };
 
@@ -127,10 +176,15 @@ type ResolvedX402Config = Readonly<{
   cdpAuth: Readonly<CdpAuth> | null;
 }>;
 
+/** The object returned by {@link createDual402}. Use `.charge()` to mint per-route middleware. */
 export type Dual402Instance = {
+  /** Create an Express middleware that accepts both x402 and MPP payments for this route. */
   charge(options: ChargeOptions): DualChargeHandler;
+  /** @internal The underlying mppx instance. Prefer the public `charge()` API. */
   _mppx: any;
+  /** @internal Resolved x402 config after defaults and validation. */
   _x402Config: ResolvedX402Config;
+  /** @internal Resolved USDC contract address. */
   _x402Asset: string;
 };
 
@@ -154,6 +208,20 @@ const DEFAULT_FACILITATOR_TIMEOUT_MS = (() => {
   return Number.isFinite(env) && env > 0 ? env : 5_000;
 })();
 
+/**
+ * Create a dual-protocol payment handler. Validates config, throws on mainnet misconfigurations
+ * (self-transfer, wrong facilitator for the network, missing CDP auth on Base mainnet).
+ *
+ * @example
+ * ```js
+ * const dual = createDual402({
+ *   mpp:  { currency, recipient, secretKey },
+ *   x402: { payTo, network: "eip155:8453", facilitatorUrl: CDP_URL, cdpAuth },
+ * });
+ * const chargeQuote = dual.charge({ amount: "0.02", description: "Quote lookup" });
+ * app.get("/quote", chargeQuote, (req, res) => res.json({ price: 42 }));
+ * ```
+ */
 export function createDual402(config: Dual402Config): Dual402Instance {
   assertConfig(config);
 
@@ -363,6 +431,15 @@ export function createDual402(config: Dual402Config): Dual402Instance {
   };
 }
 
+/**
+ * Mount `GET /openapi.json` and `GET /.well-known/x402` on the Express app. The OpenAPI spec
+ * is built from the `routes` you pass; the `/.well-known/x402` fallback advertises the minimal
+ * `{ version: 1, resources: [...] }` shape. Runtime `PAYMENT-REQUIRED` headers carry the richer
+ * per-route schemas so agent clients can retry with a valid body.
+ *
+ * Every route's `handler` must be the same middleware you registered on the app — discovery
+ * reads amount/description metadata off it.
+ */
 export function dualDiscovery(
   app: Express,
   dual: Dual402Instance,
