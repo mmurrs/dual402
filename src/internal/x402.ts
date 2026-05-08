@@ -372,6 +372,11 @@ function extractPayloadPayee(payload: JsonObject): unknown {
   );
 }
 
+function stringsEqualIgnoreCase(left: unknown, right: unknown): boolean {
+  if (typeof left !== "string" || typeof right !== "string") return false;
+  return left.toLowerCase() === right.toLowerCase();
+}
+
 function looksLikeX402Envelope(payload: JsonObject): boolean {
   const p = payload as any;
   if ("signature" in p || "authorization" in p || "scheme" in p) return true;
@@ -420,6 +425,47 @@ export async function x402Verify(
   if (!payload) return { valid: false, reason: "payload_malformed" };
   if (!looksLikeX402Envelope(payload)) {
     return { valid: false, reason: "envelope_unrecognized" };
+  }
+
+  const accepted = asObject((payload as { accepted?: unknown }).accepted);
+  if (accepted && expected.paymentRequirements) {
+    if (
+      accepted.amount !== undefined &&
+      accepted.amount !== null &&
+      !amountsEqual(accepted.amount, expected.amount)
+    ) {
+      console.warn(
+        `[dual402] x402 accepted amount mismatch got=${sanitizeLogValue(accepted.amount)} want=${expected.amount}`,
+      );
+      return { valid: false, reason: "accepted_amount_mismatch" };
+    }
+    if (
+      typeof accepted.payTo === "string" &&
+      !stringsEqualIgnoreCase(accepted.payTo, expected.payTo)
+    ) {
+      console.warn(
+        `[dual402] x402 accepted payee mismatch got=${maskHex(accepted.payTo)} want=${maskHex(expected.payTo)}`,
+      );
+      return { valid: false, reason: "accepted_payee_mismatch" };
+    }
+    if (
+      typeof accepted.network === "string" &&
+      accepted.network !== expected.paymentRequirements.network
+    ) {
+      console.warn(
+        `[dual402] x402 accepted network mismatch got=${sanitizeLogValue(accepted.network)} want=${expected.paymentRequirements.network}`,
+      );
+      return { valid: false, reason: "accepted_network_mismatch" };
+    }
+    if (
+      typeof accepted.asset === "string" &&
+      !stringsEqualIgnoreCase(accepted.asset, expected.paymentRequirements.asset)
+    ) {
+      console.warn(
+        `[dual402] x402 accepted asset mismatch got=${maskHex(accepted.asset)} want=${maskHex(expected.paymentRequirements.asset)}`,
+      );
+      return { valid: false, reason: "accepted_asset_mismatch" };
+    }
   }
 
   const paymentAmount = extractPayloadAmount(payload);

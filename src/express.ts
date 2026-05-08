@@ -246,7 +246,7 @@ export function createDual402(config: Dual402Config): Dual402Instance {
     );
   }
 
-  const facilitatorUrl = String(config.x402.facilitatorUrl).replace(/\/+$/, "");
+  const facilitatorUrl = normalizeFacilitatorUrl(config.x402.facilitatorUrl);
   const timeoutMs =
     Number.isFinite(config.x402.timeoutMs) && Number(config.x402.timeoutMs) > 0
       ? Number(config.x402.timeoutMs)
@@ -297,6 +297,7 @@ export function createDual402(config: Dual402Config): Dual402Instance {
     charge(opts: ChargeOptions): DualChargeHandler {
       const { amount, description, waitForSettle = false } = opts;
       assertChargeAmount(amount);
+      assertHeaderSafeDescription(description);
 
       const mppCharge = (mppx as any).charge({ amount, description }) as RequestHandler;
       const amountRaw = toSmallestUnit(amount, 6);
@@ -592,6 +593,21 @@ function assertConfig(config: Dual402Config): void {
   }
 }
 
+function normalizeFacilitatorUrl(value: string): string {
+  const trimmed = String(value ?? "").trim();
+  try {
+    const url = new URL(trimmed);
+    if (url.protocol !== "https:" && url.protocol !== "http:") {
+      throw new Error(`unsupported protocol ${url.protocol}`);
+    }
+    return url.toString().replace(/\/+$/, "");
+  } catch (error) {
+    throw new Error(
+      `dual402: x402.facilitatorUrl must be an absolute http(s) URL: ${errorMessage(error)}`,
+    );
+  }
+}
+
 function resolveMppRealm(config: Dual402Config): string | undefined {
   const explicit = normalizeRealm(config.mpp.realm || process.env.MPP_REALM);
   if (explicit) return explicit;
@@ -624,6 +640,25 @@ function assertChargeAmount(amount: string): void {
   }
   if (/^0+(\.0+)?$/.test(amount)) {
     throw new Error(`dual402.charge: amount must be > 0 — got ${JSON.stringify(amount)}.`);
+  }
+}
+
+function assertHeaderSafeDescription(description: string | undefined): void {
+  if (description === undefined) return;
+  if (typeof description !== "string") {
+    throw new Error(
+      `dual402.charge: description must be a string when set — got ${typeof description}`,
+    );
+  }
+
+  for (let i = 0; i < description.length; i += 1) {
+    const code = description.charCodeAt(i);
+    if (code < 0x20 || code > 0x7e) {
+      throw new Error(
+        `dual402.charge: description must contain printable ASCII only because it is used in HTTP payment headers. ` +
+          `Invalid character at index ${i} (U+${code.toString(16).toUpperCase().padStart(4, "0")}).`,
+      );
+    }
   }
 }
 
