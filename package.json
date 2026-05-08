@@ -27,7 +27,8 @@
     "typecheck": "tsc --noEmit",
     "test": "npm run build && node --test tests/dual402.smoke.mjs",
     "check": "npm run typecheck && npm run test",
-    "prepack": "npm run build"
+    "prepack": "npm run build",
+    "prepare": "npm run build || true"
   },
   "dependencies": {
     "mppx": "^0.4.11"
