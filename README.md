@@ -8,6 +8,8 @@ npm install dual402
 
 Starter template: https://github.com/mmurrs/dual402-starter
 
+Protocol references: [x402.org](https://x402.org) · [mpp.dev](https://mpp.dev).
+
 ## Scope
 
 - x402: EVM-style payee / asset configuration, facilitator-based verify + settle
