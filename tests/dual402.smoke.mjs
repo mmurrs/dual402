@@ -140,6 +140,27 @@ test("createDual402 validates required config", () => {
     () => createDual402({ mpp: {}, x402: {} }),
     /missing required config/,
   );
+  assert.throws(
+    () =>
+      createDual402({
+        ...VALID_CONFIG,
+        x402: { ...VALID_CONFIG.x402, facilitatorUrl: "not-a-url" },
+      }),
+    /facilitatorUrl must be an absolute http\(s\) URL/,
+  );
+});
+
+test("charge validates header-safe descriptions", () => {
+  const dual = createDual402(VALID_CONFIG);
+
+  assert.throws(
+    () => dual.charge({ amount: "0.02", description: "Bad — dash" }),
+    /printable ASCII only/,
+  );
+  assert.throws(
+    () => dual.charge({ amount: "0.02", description: "bad\r\nHeader: value" }),
+    /printable ASCII only/,
+  );
 });
 
 test("dualDiscovery keeps route metadata isolated when one handler is reused", async () => {
@@ -362,6 +383,60 @@ test("local payee mismatch fails closed before calling the facilitator", async (
       makeReq({
         path: "/mismatch",
         originalUrl: "/mismatch",
+        headers: { "payment-signature": forgedSignature },
+      }),
+      res,
+    );
+
+    assert.equal(fetchCalls, 0);
+    assert.equal(res.statusCode, 402);
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+test("local accepted network mismatch fails closed before calling the facilitator", async () => {
+  const dual = createDual402(VALID_CONFIG);
+  const handler = dual.charge({ amount: "0.02", description: "Network test" });
+
+  let fetchCalls = 0;
+  const originalFetch = global.fetch;
+  global.fetch = async () => {
+    fetchCalls++;
+    throw new Error("fetch should not have been called");
+  };
+
+  try {
+    const forgedSignature = Buffer.from(
+      JSON.stringify({
+        x402Version: 2,
+        accepted: {
+          scheme: "exact",
+          network: "eip155:1",
+          amount: "20000",
+          asset: dual._x402Asset,
+          payTo: VALID_CONFIG.x402.payTo,
+          maxTimeoutSeconds: 300,
+          extra: { name: "USD Coin", version: "2" },
+        },
+        payload: {
+          authorization: {
+            from: "0x1111111111111111111111111111111111111111",
+            to: VALID_CONFIG.x402.payTo,
+            value: "20000",
+            nonce: "0x1234",
+          },
+          signature: "0xdeadbeef",
+        },
+      }),
+    ).toString("base64");
+
+    const res = makeRes();
+    await runHandler(
+      handler,
+      makeReq({
+        path: "/network-mismatch",
+        originalUrl: "/network-mismatch",
         headers: { "payment-signature": forgedSignature },
       }),
       res,

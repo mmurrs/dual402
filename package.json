@@ -31,7 +31,10 @@
     "prepare": "npm run build || true"
   },
   "dependencies": {
-    "mppx": "^0.4.11"
+    "mppx": "0.6.14"
+  },
+  "engines": {
+    "node": ">=22"
   },
   "peerDependencies": {
     "express": "^5.0.0"
