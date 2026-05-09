@@ -5,6 +5,11 @@
  */
 
 import { Dual402ConfigError } from "./errors.js";
+import {
+  CDP_FACILITATOR_HOST,
+  KNOWN_MAINNETS,
+  X402_PUBLIC_TESTNET_HOST,
+} from "./internal/networks.js";
 import type { JsonObject } from "./internal/types.js";
 import { errorMessage } from "./internal/utils.js";
 
@@ -148,6 +153,40 @@ export function assertEvmAddress(field: string, value: string): void {
     throw new Dual402ConfigError(
       "invalid_evm_address",
       `dual402: ${field} "${value}" is not a valid 0x-prefixed 40-hex EVM address.`,
+    );
+  }
+}
+
+/**
+ * Cross-check the facilitator host against the configured network. Throws if a
+ * CDP-hosted facilitator is used without `cdpAuth`; warns if a known mainnet is
+ * paired with the public testnet facilitator (which would silently fail at verify).
+ */
+export function assertFacilitatorMatchesNetwork(
+  facilitatorUrl: string,
+  network: string,
+  cdpAuth: CdpAuth | undefined,
+): void {
+  let host = "";
+  try {
+    host = new URL(facilitatorUrl).host.toLowerCase();
+  } catch {
+    return;
+  }
+
+  if (host === CDP_FACILITATOR_HOST && !cdpAuth) {
+    throw new Dual402ConfigError(
+      "missing_cdp_auth",
+      `dual402: facilitatorUrl is CDP-hosted (${CDP_FACILITATOR_HOST}) but x402.cdpAuth is not set. ` +
+        "Provide CDP_API_KEY_ID and CDP_API_KEY_SECRET, or use a non-CDP facilitator.",
+    );
+  }
+
+  if (KNOWN_MAINNETS.has(network) && host === X402_PUBLIC_TESTNET_HOST) {
+    console.warn(
+      `[dual402] facilitatorUrl host "${host}" is the public x402.org facilitator, ` +
+        `which only supports Base Sepolia, but x402.network "${network}" is a mainnet. ` +
+        "Switch to api.cdp.coinbase.com (with cdpAuth) or a mainnet-capable facilitator.",
     );
   }
 }
