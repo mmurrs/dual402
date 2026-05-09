@@ -69,6 +69,7 @@ export type Dual402Instance = {
   _x402Asset: string;
 };
 
+const MAX_DECIMAL_PRECISION = 6;
 const DEFAULT_FACILITATOR_TIMEOUT_MS = (() => {
   const env = Number.parseInt(process.env.X402_FACILITATOR_TIMEOUT_MS ?? "", 10);
   return Number.isFinite(env) && env > 0 ? env : 5_000;
@@ -150,7 +151,7 @@ export function createDual402(config: Dual402Config): Dual402Instance {
 
       const mppCharge = (mppx as { charge(opts: { amount: string; description?: string }): RequestHandler })
         .charge({ amount, description });
-      const amountRaw = toSmallestUnit(amount, 6);
+      const amountRaw = toSmallestUnit(amount, MAX_DECIMAL_PRECISION);
 
       const handler: DualChargeHandler = async (req, res, next) => {
         const route = resolveRoutePath(req);
@@ -447,10 +448,25 @@ function resolveCdpAuth(cdpAuth: CdpAuth | undefined): Readonly<CdpAuth> | null 
 }
 
 function assertChargeAmount(amount: string): void {
-  if (typeof amount !== "string" || !/^\d+(\.\d+)?$/.test(amount)) {
+  if (typeof amount !== "string") {
+    throw new Dual402ConfigError(
+      "invalid_amount",
+      `dual402.charge: amount must be a string — got ${typeof amount}`,
+    );
+  }
+  const match = /^(\d+)(?:\.(\d+))?$/.exec(amount);
+  if (!match) {
     throw new Dual402ConfigError(
       "invalid_amount",
       `dual402.charge: amount must be a decimal string like "0.02" — got ${JSON.stringify(amount)}`,
+    );
+  }
+  const fractional = match[2] ?? "";
+  if (fractional.length > MAX_DECIMAL_PRECISION) {
+    throw new Dual402ConfigError(
+      "invalid_amount",
+      `dual402.charge: amount "${amount}" has more than ${MAX_DECIMAL_PRECISION} decimal places ` +
+        "(USDC has 6 decimals).",
     );
   }
   if (/^0+(\.0+)?$/.test(amount)) {

@@ -28,7 +28,7 @@ export type VerifyContext = {
   amount: string;
   payTo: string;
   timeoutMs: number;
-  paymentRequirements?: PaymentRequirements;
+  paymentRequirements: PaymentRequirements;
   cdpAuth: CdpAuthLike;
   onVerify: OnVerifyHook;
 };
@@ -74,14 +74,11 @@ export async function x402Verify(
 
   const wirePayload = canonicalizePaymentPayload(payload);
   const wireRequirements = canonicalizeRequirements(expected.paymentRequirements);
-  const body =
-    wireRequirements && expected.paymentRequirements
-      ? {
-          x402Version: 2,
-          paymentPayload: wirePayload,
-          paymentRequirements: wireRequirements,
-        }
-      : { payload };
+  const body = {
+    x402Version: 2,
+    paymentPayload: wirePayload,
+    paymentRequirements: wireRequirements,
+  };
 
   try {
     const res = await fetchJsonWithTimeout(
@@ -136,19 +133,16 @@ export async function x402Settle(
   payload: JsonObject,
   facilitatorUrl: string,
   timeoutMs: number,
-  paymentRequirements: JsonObject | PaymentRequirements | undefined,
+  paymentRequirements: JsonObject | PaymentRequirements,
   cdpAuth: CdpAuthLike,
 ): Promise<{ txHash?: string } & JsonObject> {
   const wirePayload = canonicalizePaymentPayload(payload);
   const wireRequirements = canonicalizeRequirements(paymentRequirements);
-  const body =
-    wireRequirements && paymentRequirements
-      ? {
-          x402Version: 2,
-          paymentPayload: wirePayload,
-          paymentRequirements: wireRequirements,
-        }
-      : { payload };
+  const body = {
+    x402Version: 2,
+    paymentPayload: wirePayload,
+    paymentRequirements: wireRequirements,
+  };
 
   const res = await fetchJsonWithTimeout(
     `${facilitatorUrl}/settle`,
@@ -352,9 +346,8 @@ function checkSelfTransfer(payload: JsonObject, expectedPayTo: string): VerifyRe
 }
 
 function canonicalizeRequirements(
-  requirements: JsonObject | PaymentRequirements | undefined,
-): JsonObject | undefined {
-  if (!requirements || typeof requirements !== "object") return requirements;
+  requirements: JsonObject | PaymentRequirements,
+): JsonObject {
   const req = requirements as PaymentRequirements;
   return {
     scheme: req.scheme,
