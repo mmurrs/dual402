@@ -57,6 +57,9 @@ export async function x402Verify(
   const payeeCheck = comparePayloadPayee(payload, expected.payTo);
   if (payeeCheck) return payeeCheck;
 
+  const selfTransferCheck = checkSelfTransfer(payload, expected.payTo);
+  if (selfTransferCheck) return selfTransferCheck;
+
   if (expected.onVerify) {
     try {
       const hookResult = await expected.onVerify(payload);
@@ -242,6 +245,14 @@ function extractPayloadAmount(payload: JsonObject): unknown {
   );
 }
 
+function extractPayloadFrom(payload: JsonObject): unknown {
+  const p = payload as Record<string, unknown>;
+  const inner = asObject(p.payload);
+  const innerAuth = inner ? asObject(inner.authorization) : null;
+  const directAuth = asObject(p.authorization);
+  return innerAuth?.from ?? directAuth?.from ?? p.from;
+}
+
 function extractPayloadPayee(payload: JsonObject): unknown {
   const p = payload as Record<string, unknown>;
   const inner = asObject(p.payload);
@@ -324,6 +335,18 @@ function comparePayloadPayee(payload: JsonObject, expectedPayTo: string): Verify
       `[dual402] x402 payee mismatch got=${maskHex(rawPayee)} want=${maskHex(expectedPayTo)}`,
     );
     return { valid: false, reason: "payee_mismatch" };
+  }
+  return null;
+}
+
+function checkSelfTransfer(payload: JsonObject, expectedPayTo: string): VerifyResult | null {
+  const from = extractPayloadFrom(payload);
+  if (typeof from !== "string" || from === "") return null;
+  if (stringsEqualIgnoreCase(from, expectedPayTo)) {
+    console.warn(
+      `[dual402] x402 self-transfer detected from=${maskHex(from)} payTo=${maskHex(expectedPayTo)}`,
+    );
+    return { valid: false, reason: "self_transfer" };
   }
   return null;
 }
