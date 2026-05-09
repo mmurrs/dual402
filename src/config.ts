@@ -74,6 +74,9 @@ export type ResolvedX402Config = Readonly<{
 }>;
 
 const EVM_ADDR_RE = /^0x[0-9a-fA-F]{40}$/;
+const CAIP2_RE = /^[a-z0-9]{3,8}:[-_a-zA-Z0-9]{1,32}$/;
+const KNOWN_CAIP2_NAMESPACES = new Set(["eip155", "solana"]);
+const MIN_SECRET_KEY_LENGTH = 32;
 
 /** Validate that the user-supplied {@link Dual402Config} has all required fields. */
 export function assertConfig(config: Dual402Config): void {
@@ -100,6 +103,42 @@ export function assertConfig(config: Dual402Config): void {
   assertEvmAddress("mpp.currency", config.mpp.currency);
   if (config.x402.asset !== undefined) {
     assertEvmAddress("x402.asset", config.x402.asset);
+  }
+
+  assertCaip2Network(config.x402.network);
+  assertSecretKey(config.mpp.secretKey);
+}
+
+function assertCaip2Network(network: string): void {
+  if (!CAIP2_RE.test(network)) {
+    throw new Dual402ConfigError(
+      "invalid_network",
+      `dual402: x402.network "${network}" is not a valid CAIP-2 chain id ` +
+        `(expected something like "eip155:8453").`,
+    );
+  }
+  const namespace = network.split(":")[0];
+  if (!KNOWN_CAIP2_NAMESPACES.has(namespace)) {
+    console.warn(
+      `[dual402] x402.network namespace "${namespace}" is unknown to dual402; ` +
+        "the facilitator may not support it.",
+    );
+  }
+}
+
+function assertSecretKey(secretKey: unknown): void {
+  if (typeof secretKey !== "string") {
+    throw new Dual402ConfigError(
+      "weak_secret_key",
+      `dual402: mpp.secretKey must be a string — got ${typeof secretKey}.`,
+    );
+  }
+  if (secretKey.length < MIN_SECRET_KEY_LENGTH) {
+    throw new Dual402ConfigError(
+      "weak_secret_key",
+      `dual402: mpp.secretKey is too short (${secretKey.length} chars, need at least ${MIN_SECRET_KEY_LENGTH}). ` +
+        "Generate one with `node -e \"console.log(require('crypto').randomBytes(32).toString('hex'))\"`.",
+    );
   }
 }
 
