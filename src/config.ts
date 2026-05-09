@@ -4,6 +4,7 @@
  * so consumers can read the contract in one place.
  */
 
+import { Dual402ConfigError } from "./errors.js";
 import type { JsonObject } from "./internal/types.js";
 import { errorMessage } from "./internal/utils.js";
 
@@ -87,7 +88,8 @@ export function assertConfig(config: Dual402Config): void {
   }
 
   if (missing.length > 0) {
-    throw new Error(
+    throw new Dual402ConfigError(
+      "missing_required",
       `dual402: missing required config:\n  - ${missing.join("\n  - ")}\n` +
         "Create a .env from your example values before booting.",
     );
@@ -115,7 +117,8 @@ export function normalizeFacilitatorUrl(value: string): string {
     }
     return url.toString().replace(/\/+$/, "");
   } catch (error) {
-    throw new Error(
+    throw new Dual402ConfigError(
+      "invalid_facilitator_url",
       `dual402: x402.facilitatorUrl must be an absolute http(s) URL: ${errorMessage(error)}`,
     );
   }

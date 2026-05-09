@@ -25,6 +25,9 @@ export type {
   X402Config,
 } from "./config.js";
 
+export { Dual402ConfigError } from "./errors.js";
+export type { Dual402ConfigErrorCode } from "./errors.js";
+
 export type { JsonSchema } from "./internal/types.js";
 export { maskHex } from "./internal/utils.js";
 export { parseCdpPrivateKey } from "./internal/cdp.js";

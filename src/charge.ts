@@ -14,6 +14,7 @@ import {
   assertConfig,
   normalizeFacilitatorUrl,
 } from "./config.js";
+import { Dual402ConfigError } from "./errors.js";
 import { parseCdpPrivateKey } from "./internal/cdp.js";
 import { USDC_BY_NETWORK } from "./internal/networks.js";
 import type { JsonObject, JsonSchema } from "./internal/types.js";
@@ -103,7 +104,8 @@ export function createDual402(config: Dual402Config): Dual402Instance {
 
   const x402Asset = config.x402.asset ?? USDC_BY_NETWORK[config.x402.network];
   if (!x402Asset) {
-    throw new Error(
+    throw new Dual402ConfigError(
+      "unknown_network_asset",
       `dual402: no default USDC for network "${config.x402.network}". ` +
         `Set x402.asset explicitly or pick one of ${Object.keys(USDC_BY_NETWORK).join(", ")}.`,
     );
@@ -417,15 +419,22 @@ function resolveCdpAuth(cdpAuth: CdpAuth | undefined): Readonly<CdpAuth> | null 
   if (!cdpAuth) return null;
   const { apiKeyId, apiKeySecret } = cdpAuth;
   if (!apiKeyId) {
-    throw new Error("dual402: x402.cdpAuth.apiKeyId is required when cdpAuth is set.");
+    throw new Dual402ConfigError(
+      "invalid_cdp_auth",
+      "dual402: x402.cdpAuth.apiKeyId is required when cdpAuth is set.",
+    );
   }
   if (!apiKeySecret) {
-    throw new Error("dual402: x402.cdpAuth.apiKeySecret is required when cdpAuth is set.");
+    throw new Dual402ConfigError(
+      "invalid_cdp_auth",
+      "dual402: x402.cdpAuth.apiKeySecret is required when cdpAuth is set.",
+    );
   }
   try {
     parseCdpPrivateKey(apiKeySecret);
   } catch (error) {
-    throw new Error(
+    throw new Dual402ConfigError(
+      "invalid_cdp_auth",
       `dual402: CDP_API_KEY_SECRET could not be parsed: ${errorMessage(error)}`,
     );
   }
@@ -434,19 +443,24 @@ function resolveCdpAuth(cdpAuth: CdpAuth | undefined): Readonly<CdpAuth> | null 
 
 function assertChargeAmount(amount: string): void {
   if (typeof amount !== "string" || !/^\d+(\.\d+)?$/.test(amount)) {
-    throw new Error(
+    throw new Dual402ConfigError(
+      "invalid_amount",
       `dual402.charge: amount must be a decimal string like "0.02" — got ${JSON.stringify(amount)}`,
     );
   }
   if (/^0+(\.0+)?$/.test(amount)) {
-    throw new Error(`dual402.charge: amount must be > 0 — got ${JSON.stringify(amount)}.`);
+    throw new Dual402ConfigError(
+      "invalid_amount",
+      `dual402.charge: amount must be > 0 — got ${JSON.stringify(amount)}.`,
+    );
   }
 }
 
 function assertHeaderSafeDescription(description: string | undefined): void {
   if (description === undefined) return;
   if (typeof description !== "string") {
-    throw new Error(
+    throw new Dual402ConfigError(
+      "invalid_description",
       `dual402.charge: description must be a string when set — got ${typeof description}`,
     );
   }
@@ -454,8 +468,9 @@ function assertHeaderSafeDescription(description: string | undefined): void {
   for (let i = 0; i < description.length; i += 1) {
     const code = description.charCodeAt(i);
     if (code < 0x20 || code > 0x7e) {
-      throw new Error(
-        `dual402.charge: description must contain printable ASCII only because it is used in HTTP payment headers. ` +
+      throw new Dual402ConfigError(
+        "invalid_description",
+        "dual402.charge: description must contain printable ASCII only because it is used in HTTP payment headers. " +
           `Invalid character at index ${i} (U+${code.toString(16).toUpperCase().padStart(4, "0")}).`,
       );
     }
