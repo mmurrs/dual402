@@ -12,6 +12,7 @@ import {
   type Dual402Config,
   type ResolvedX402Config,
   assertConfig,
+  assertEvmAddress,
   normalizeFacilitatorUrl,
 } from "./config.js";
 import { Dual402ConfigError } from "./errors.js";
@@ -110,6 +111,7 @@ export function createDual402(config: Dual402Config): Dual402Instance {
         `Set x402.asset explicitly or pick one of ${Object.keys(USDC_BY_NETWORK).join(", ")}.`,
     );
   }
+  assertEvmAddress("x402.asset", x402Asset);
 
   const facilitatorUrl = normalizeFacilitatorUrl(config.x402.facilitatorUrl);
   const timeoutMs =

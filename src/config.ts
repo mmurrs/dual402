@@ -95,14 +95,20 @@ export function assertConfig(config: Dual402Config): void {
     );
   }
 
-  if (!EVM_ADDR_RE.test(config.x402.payTo)) {
-    console.warn(
-      `[dual402] x402.payTo "${config.x402.payTo}" doesn't look like an EVM address.`,
-    );
+  assertEvmAddress("x402.payTo", config.x402.payTo);
+  assertEvmAddress("mpp.recipient", config.mpp.recipient);
+  assertEvmAddress("mpp.currency", config.mpp.currency);
+  if (config.x402.asset !== undefined) {
+    assertEvmAddress("x402.asset", config.x402.asset);
   }
-  if (!EVM_ADDR_RE.test(config.mpp.recipient)) {
-    console.warn(
-      `[dual402] mpp.recipient "${config.mpp.recipient}" doesn't look like an EVM address.`,
+}
+
+/** Throw {@link Dual402ConfigError} if `value` isn't a 0x-prefixed 40-hex address. */
+export function assertEvmAddress(field: string, value: string): void {
+  if (!EVM_ADDR_RE.test(value)) {
+    throw new Dual402ConfigError(
+      "invalid_evm_address",
+      `dual402: ${field} "${value}" is not a valid 0x-prefixed 40-hex EVM address.`,
     );
   }
 }
