@@ -8,24 +8,25 @@ import type { Express, NextFunction, Request, RequestHandler, Response } from "e
 import { Mppx, tempo } from "mppx/express";
 
 import { parseCdpPrivateKey } from "./internal/cdp.js";
+import { USDC_BY_NETWORK } from "./internal/networks.js";
+import type { JsonObject, JsonSchema } from "./internal/types.js";
+import {
+  maskHex,
+  resolveBaseUrl,
+  sanitizeLogValue,
+  toSmallestUnit,
+} from "./internal/utils.js";
 import {
   buildAcceptsEntry,
   buildPaymentRequired,
   extractRequestBodySchema,
-  maskHex,
   parametersToSchema,
   patchStatusToInject402,
-  resolveBaseUrl,
-  sanitizeLogValue,
-  toSmallestUnit,
-  x402Settle,
-  x402Verify,
-  type JsonObject,
-  type JsonSchema,
-} from "./internal/x402.js";
+} from "./internal/x402-headers.js";
+import { x402Settle, x402Verify } from "./internal/x402-wire.js";
 
-export type { JsonSchema } from "./internal/x402.js";
-export { maskHex } from "./internal/x402.js";
+export type { JsonSchema } from "./internal/types.js";
+export { maskHex } from "./internal/utils.js";
 export { parseCdpPrivateKey } from "./internal/cdp.js";
 
 /** MPP (Tempo USDC) configuration — passed to {@link createDual402}. */
@@ -186,12 +187,6 @@ export type Dual402Instance = {
   _x402Config: ResolvedX402Config;
   /** @internal Resolved USDC contract address. */
   _x402Asset: string;
-};
-
-const USDC_BY_NETWORK: Record<string, `0x${string}`> = {
-  "eip155:84532": "0x036CbD53842c5426634e7929541eC2318f3dCF7e",
-  "eip155:8453": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
-  "eip155:1": "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
 };
 
 const DEFAULT_RESPONSE_SCHEMA: JsonSchema = {
