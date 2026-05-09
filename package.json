@@ -25,7 +25,7 @@
     "build": "tsc",
     "dev": "tsc --watch",
     "typecheck": "tsc --noEmit",
-    "test": "npm run build && node --test tests/dual402.smoke.mjs",
+    "test": "npm run build && node --test tests/",
     "check": "npm run typecheck && npm run test",
     "prepack": "npm run build",
     "prepare": "npm run build || true"
