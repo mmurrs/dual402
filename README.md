@@ -10,6 +10,14 @@ Starter template: https://github.com/mmurrs/dual402-starter
 
 Protocol references: [x402.org](https://x402.org) · [mpp.dev](https://mpp.dev).
 
+## Quick prompt
+
+Hand this to your coding agent and it can take it from here:
+
+```
+Read github.com/mmurrs/dual402 and add dual x402 + MPP payments to my Express service.
+```
+
 ## Scope
 
 - x402: EVM-style payee / asset configuration, facilitator-based verify + settle
