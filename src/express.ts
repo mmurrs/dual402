@@ -73,7 +73,7 @@ export type Dual402Config = {
   mpp: MppConfig;
   x402: X402Config;
   /**
-   * Optional hook called after facilitator-side verify succeeds but before `next()`.
+   * Optional hook called after facilitator-side verify succeeds but before settlement/`next()`.
    * Return `false` to reject the payment; useful for replay protection or per-caller policy.
    */
   onVerify?: (
@@ -88,7 +88,7 @@ export type ChargeOptions = {
   amount: string;
   /** Human-readable description. ASCII only — ends up in `WWW-Authenticate` header values. */
   description?: string;
-  /** Block on x402 settlement before returning the response. Default is fire-and-forget. */
+  /** Block on x402 settlement before returning the response. Default is `true`; opt out only for low-value routes. */
   waitForSettle?: boolean;
 };
 
@@ -203,6 +203,7 @@ const DEFAULT_RESPONSE_SCHEMA: JsonSchema = {
 };
 
 const EVM_ADDR_RE = /^0x[0-9a-fA-F]{40}$/;
+const CDP_FACILITATOR_HOST = "api.cdp.coinbase.com";
 const DEFAULT_FACILITATOR_TIMEOUT_MS = (() => {
   const env = Number.parseInt(process.env.X402_FACILITATOR_TIMEOUT_MS ?? "", 10);
   return Number.isFinite(env) && env > 0 ? env : 5_000;
@@ -247,6 +248,17 @@ export function createDual402(config: Dual402Config): Dual402Instance {
   }
 
   const facilitatorUrl = normalizeFacilitatorUrl(config.x402.facilitatorUrl);
+  const facilitatorUrlHost = facilitatorHost(facilitatorUrl);
+  if (config.x402.network === "eip155:8453" && facilitatorUrlHost !== CDP_FACILITATOR_HOST) {
+    throw new Error(
+      `dual402: Base mainnet (${config.x402.network}) requires Coinbase CDP's x402 facilitator (${CDP_FACILITATOR_HOST}).`,
+    );
+  }
+  if (facilitatorUrlHost === CDP_FACILITATOR_HOST && !config.x402.cdpAuth) {
+    throw new Error(
+      "dual402: x402.cdpAuth is required when using Coinbase CDP's x402 facilitator.",
+    );
+  }
   const timeoutMs =
     Number.isFinite(config.x402.timeoutMs) && Number(config.x402.timeoutMs) > 0
       ? Number(config.x402.timeoutMs)
@@ -295,7 +307,7 @@ export function createDual402(config: Dual402Config): Dual402Instance {
     _x402Asset: x402Asset,
 
     charge(opts: ChargeOptions): DualChargeHandler {
-      const { amount, description, waitForSettle = false } = opts;
+      const { amount, description, waitForSettle = true } = opts;
       assertChargeAmount(amount);
       assertHeaderSafeDescription(description);
 
@@ -525,7 +537,7 @@ export function dualDiscovery(
 
     paths[route.path] = {
       ...(paths[route.path] ?? {}),
-      [route.method]: operation,
+      [route.method.toLowerCase()]: operation,
     };
   }
 
@@ -581,14 +593,27 @@ function assertConfig(config: Dual402Config): void {
     );
   }
 
-  if (!EVM_ADDR_RE.test(config.x402.payTo)) {
-    console.warn(
-      `[dual402] x402.payTo "${config.x402.payTo}" doesn't look like an EVM address.`,
+  if (String(config.mpp.secretKey).length < 32) {
+    throw new Error("dual402: mpp.secretKey must be at least 32 characters.");
+  }
+  if (!EVM_ADDR_RE.test(config.mpp.currency)) {
+    throw new Error(
+      `dual402: mpp.currency must be an EVM token address, got ${JSON.stringify(config.mpp.currency)}.`,
     );
   }
   if (!EVM_ADDR_RE.test(config.mpp.recipient)) {
-    console.warn(
-      `[dual402] mpp.recipient "${config.mpp.recipient}" doesn't look like an EVM address.`,
+    throw new Error(
+      `dual402: mpp.recipient must be an EVM address, got ${JSON.stringify(config.mpp.recipient)}.`,
+    );
+  }
+  if (String(config.x402.network).startsWith("eip155:") && !EVM_ADDR_RE.test(config.x402.payTo)) {
+    throw new Error(
+      `dual402: x402.payTo must be an EVM address for ${config.x402.network}, got ${JSON.stringify(config.x402.payTo)}.`,
+    );
+  }
+  if (config.x402.asset !== undefined && !EVM_ADDR_RE.test(config.x402.asset)) {
+    throw new Error(
+      `dual402: x402.asset must be an EVM token address, got ${JSON.stringify(config.x402.asset)}.`,
     );
   }
 }
@@ -606,6 +631,10 @@ function normalizeFacilitatorUrl(value: string): string {
       `dual402: x402.facilitatorUrl must be an absolute http(s) URL: ${errorMessage(error)}`,
     );
   }
+}
+
+function facilitatorHost(value: string): string {
+  return new URL(value).host;
 }
 
 function resolveMppRealm(config: Dual402Config): string | undefined {

@@ -22,13 +22,14 @@
     "LICENSE"
   ],
   "scripts": {
-    "build": "tsc",
+    "clean": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\"",
+    "build": "npm run clean && tsc",
     "dev": "tsc --watch",
     "typecheck": "tsc --noEmit",
     "test": "npm run build && node --test tests/dual402.smoke.mjs",
     "check": "npm run typecheck && npm run test",
     "prepack": "npm run build",
-    "prepare": "npm run build || true"
+    "prepare": "npm run build"
   },
   "dependencies": {
     "mppx": "0.6.14"

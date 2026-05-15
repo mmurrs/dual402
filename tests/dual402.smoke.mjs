@@ -18,6 +18,43 @@ const VALID_CONFIG = {
   },
 };
 
+function makePaymentSignature({
+  amount = "20000",
+  payTo = VALID_CONFIG.x402.payTo,
+  network = VALID_CONFIG.x402.network,
+  asset = "0x036CbD53842c5426634e7929541eC2318f3dCF7e",
+  includeAmount = true,
+  includePayee = true,
+} = {}) {
+  const authorization = {
+    from: "0x1111111111111111111111111111111111111111",
+    nonce: "0x1234",
+    validAfter: "1",
+    validBefore: "9999999999",
+  };
+  if (includePayee) authorization.to = payTo;
+  if (includeAmount) authorization.value = amount;
+
+  return Buffer.from(
+    JSON.stringify({
+      x402Version: 2,
+      accepted: {
+        scheme: "exact",
+        network,
+        amount,
+        asset,
+        payTo,
+        maxTimeoutSeconds: 300,
+        extra: { name: "USD Coin", version: "2" },
+      },
+      payload: {
+        authorization,
+        signature: "0xdeadbeef",
+      },
+    }),
+  ).toString("base64");
+}
+
 function makeApp() {
   return {
     routes: new Map(),
@@ -148,6 +185,46 @@ test("createDual402 validates required config", () => {
       }),
     /facilitatorUrl must be an absolute http\(s\) URL/,
   );
+  assert.throws(
+    () =>
+      createDual402({
+        ...VALID_CONFIG,
+        mpp: { ...VALID_CONFIG.mpp, secretKey: "short" },
+      }),
+    /secretKey must be at least 32 characters/,
+  );
+  assert.throws(
+    () =>
+      createDual402({
+        ...VALID_CONFIG,
+        x402: { ...VALID_CONFIG.x402, payTo: "not-an-address" },
+      }),
+    /x402\.payTo must be an EVM address/,
+  );
+  assert.throws(
+    () =>
+      createDual402({
+        ...VALID_CONFIG,
+        x402: {
+          ...VALID_CONFIG.x402,
+          facilitatorUrl: "https://api.cdp.coinbase.com/platform/v2/x402",
+          network: "eip155:8453",
+        },
+      }),
+    /cdpAuth is required/,
+  );
+  assert.throws(
+    () =>
+      createDual402({
+        ...VALID_CONFIG,
+        x402: {
+          ...VALID_CONFIG.x402,
+          network: "eip155:8453",
+          facilitatorUrl: "https://x402.org/facilitator",
+        },
+      }),
+    /Base mainnet.*CDP/,
+  );
 });
 
 test("charge validates header-safe descriptions", () => {
@@ -194,6 +271,10 @@ test("dualDiscovery keeps route metadata isolated when one handler is reused", a
     ],
   });
 
+  const openapiRes = makeRes();
+  await app.routes.get("/openapi.json")(makeReq(), openapiRes);
+  assert.ok(openapiRes.body.paths["/one"].get);
+
   const previousBaseUrl = process.env.BASE_URL;
   process.env.BASE_URL = "https://public.example";
   try {
@@ -238,6 +319,29 @@ test("dualDiscovery keeps route metadata isolated when one handler is reused", a
     if (previousBaseUrl === undefined) delete process.env.BASE_URL;
     else process.env.BASE_URL = previousBaseUrl;
   }
+});
+
+test("dualDiscovery normalizes uppercase OpenAPI method keys", async () => {
+  const app = makeApp();
+  const dual = createDual402(VALID_CONFIG);
+  const charge = dual.charge({ amount: "0.02" });
+
+  dualDiscovery(app, dual, {
+    routes: [
+      {
+        method: "GET",
+        path: "/caps",
+        handler: charge,
+        operationId: "routeCaps",
+        summary: "Route caps",
+      },
+    ],
+  });
+
+  const res = makeRes();
+  await app.routes.get("/openapi.json")(makeReq(), res);
+  assert.ok(res.body.paths["/caps"].get);
+  assert.equal(res.body.paths["/caps"].GET, undefined);
 });
 
 test("verified x402 requests use CDP body shape and attach receipt headers", async () => {
@@ -346,6 +450,126 @@ test("verified x402 requests use CDP body shape and attach receipt headers", asy
     assert.equal(receipt.success, true);
     assert.equal(receipt.network, "eip155:8453");
     assert.equal(receipt.txHash, `0x${"a".repeat(64)}`);
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+test("x402 settlement is blocking by default", async () => {
+  const dual = createDual402(VALID_CONFIG);
+  const handler = dual.charge({ amount: "0.02", description: "Default settle" });
+
+  let releaseSettle;
+  let settleStarted;
+  const settleStartedPromise = new Promise((resolve) => {
+    settleStarted = resolve;
+  });
+  const originalFetch = global.fetch;
+  global.fetch = async (url) => {
+    if (String(url).endsWith("/verify")) {
+      return fakeFetchResponse({ ok: true, json: { isValid: true } });
+    }
+    settleStarted();
+    return new Promise((resolve) => {
+      releaseSettle = () =>
+        resolve(
+          fakeFetchResponse({
+            ok: true,
+            json: { success: true, transaction: `0x${"b".repeat(64)}` },
+          }),
+        );
+    });
+  };
+
+  try {
+    const res = makeRes();
+    let nextCalled = false;
+    const promise = handler(
+      makeReq({ headers: { "payment-signature": makePaymentSignature() } }),
+      res,
+      () => {
+        nextCalled = true;
+      },
+    );
+
+    await settleStartedPromise;
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(nextCalled, false, "next() must wait for settlement by default");
+
+    releaseSettle();
+    await promise;
+    assert.equal(nextCalled, true);
+    const receipt = decodeBase64Json(headerValue(res.headers, "payment-response"));
+    assert.equal(receipt.txHash, `0x${"b".repeat(64)}`);
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+test("onVerify runs only after facilitator verification and before settlement", async () => {
+  const events = [];
+  const dual = createDual402({
+    ...VALID_CONFIG,
+    onVerify() {
+      events.push("hook");
+    },
+  });
+  const handler = dual.charge({ amount: "0.02" });
+
+  const originalFetch = global.fetch;
+  global.fetch = async (url) => {
+    if (String(url).endsWith("/verify")) {
+      events.push("verify");
+      return fakeFetchResponse({ ok: true, json: { isValid: true } });
+    }
+    events.push("settle");
+    return fakeFetchResponse({
+      ok: true,
+      json: { success: true, transaction: `0x${"c".repeat(64)}` },
+    });
+  };
+
+  try {
+    await runHandler(
+      handler,
+      makeReq({ headers: { "payment-signature": makePaymentSignature() } }),
+      makeRes(),
+    );
+    assert.deepEqual(events, ["verify", "hook", "settle"]);
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+test("local missing amount or payee fails closed before calling the facilitator", async () => {
+  const dual = createDual402(VALID_CONFIG);
+  const handler = dual.charge({ amount: "0.02", description: "Missing field test" });
+
+  let fetchCalls = 0;
+  const originalFetch = global.fetch;
+  global.fetch = async () => {
+    fetchCalls++;
+    throw new Error("fetch should not have been called");
+  };
+
+  try {
+    for (const paymentSignature of [
+      makePaymentSignature({ includeAmount: false }),
+      makePaymentSignature({ includePayee: false }),
+    ]) {
+      const res = makeRes();
+      await runHandler(
+        handler,
+        makeReq({
+          path: "/missing",
+          originalUrl: "/missing",
+          headers: { "payment-signature": paymentSignature },
+        }),
+        res,
+      );
+      assert.equal(res.statusCode, 402);
+    }
+    assert.equal(fetchCalls, 0);
   } finally {
     global.fetch = originalFetch;
   }

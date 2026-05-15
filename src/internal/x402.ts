@@ -469,37 +469,27 @@ export async function x402Verify(
   }
 
   const paymentAmount = extractPayloadAmount(payload);
-  if (paymentAmount !== undefined && paymentAmount !== null) {
-    if (!amountsEqual(paymentAmount, expected.amount)) {
-      console.warn(
-        `[dual402] x402 amount mismatch got=${sanitizeLogValue(paymentAmount)} want=${expected.amount}`,
-      );
-      return { valid: false, reason: "amount_mismatch" };
-    }
+  if (paymentAmount === undefined || paymentAmount === null) {
+    return { valid: false, reason: "amount_missing" };
+  }
+  if (!amountsEqual(paymentAmount, expected.amount)) {
+    console.warn(
+      `[dual402] x402 amount mismatch got=${sanitizeLogValue(paymentAmount)} want=${expected.amount}`,
+    );
+    return { valid: false, reason: "amount_mismatch" };
   }
 
   const rawPayee = extractPayloadPayee(payload);
-  if (rawPayee !== undefined && rawPayee !== null && rawPayee !== "") {
-    const got = String(rawPayee).toLowerCase();
-    const want = String(expected.payTo).toLowerCase();
-    if (got !== want) {
-      console.warn(
-        `[dual402] x402 payee mismatch got=${maskHex(got)} want=${maskHex(want)}`,
-      );
-      return { valid: false, reason: "payee_mismatch" };
-    }
+  if (rawPayee === undefined || rawPayee === null || rawPayee === "") {
+    return { valid: false, reason: "payee_missing" };
   }
-
-  if (expected.onVerify) {
-    try {
-      const hookResult = await expected.onVerify(payload);
-      if (hookResult === false) {
-        return { valid: false, reason: "rejected_by_hook" };
-      }
-    } catch (error) {
-      console.warn(`[dual402] onVerify hook threw: ${errorMessage(error)}`);
-      return { valid: false, reason: "hook_error" };
-    }
+  const got = String(rawPayee).toLowerCase();
+  const want = String(expected.payTo).toLowerCase();
+  if (got !== want) {
+    console.warn(
+      `[dual402] x402 payee mismatch got=${maskHex(got)} want=${maskHex(want)}`,
+    );
+    return { valid: false, reason: "payee_mismatch" };
   }
 
   const wirePayload = canonicalizePaymentPayload(payload);
@@ -541,6 +531,18 @@ export async function x402Verify(
         : typeof data.reason === "string"
           ? data.reason
           : undefined;
+
+    if (valid && expected.onVerify) {
+      try {
+        const hookResult = await expected.onVerify(wirePayload);
+        if (hookResult === false) {
+          return { valid: false, reason: "rejected_by_hook" };
+        }
+      } catch (error) {
+        console.warn(`[dual402] onVerify hook threw: ${errorMessage(error)}`);
+        return { valid: false, reason: "hook_error" };
+      }
+    }
 
     return {
       valid,
