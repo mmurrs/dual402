@@ -1,6 +1,7 @@
 import crypto from "node:crypto";
 import assert from "node:assert/strict";
 import test from "node:test";
+import express from "express";
 
 import { createDual402, dualDiscovery } from "../dist/express.js";
 
@@ -170,6 +171,31 @@ function fakeFetchResponse({ ok, status = ok ? 200 : 500, json, text = "" }) {
       return text;
     },
   };
+}
+
+function listen(app) {
+  return new Promise((resolve, reject) => {
+    const server = app.listen(0, "127.0.0.1", (error) => {
+      if (error) reject(error);
+      else resolve(server);
+    });
+    server.on("error", reject);
+  });
+}
+
+function closeServer(server) {
+  return new Promise((resolve, reject) => {
+    try {
+      server.close((error) => {
+        if (error?.code === "ERR_SERVER_NOT_RUNNING") resolve();
+        else if (error) reject(error);
+        else resolve();
+      });
+    } catch (error) {
+      if (error?.code === "ERR_SERVER_NOT_RUNNING") resolve();
+      else reject(error);
+    }
+  });
 }
 
 test("createDual402 validates required config", () => {
@@ -452,6 +478,117 @@ test("verified x402 requests use CDP body shape and attach receipt headers", asy
     assert.equal(receipt.txHash, `0x${"a".repeat(64)}`);
   } finally {
     global.fetch = originalFetch;
+  }
+});
+
+test("Express app performs full unpaid challenge then x402 paid retry flow", async (t) => {
+  const app = express();
+  const dual = createDual402(VALID_CONFIG);
+  const charge = dual.charge({ amount: "0.02", description: "Protected data" });
+
+  dualDiscovery(app, dual, {
+    info: { title: "E2E Test API", description: "Integration coverage", version: "1.0.0" },
+    routes: [
+      {
+        method: "GET",
+        path: "/protected",
+        handler: charge,
+        operationId: "getProtected",
+        summary: "Get protected data",
+        parameters: [
+          {
+            name: "id",
+            in: "query",
+            required: true,
+            schema: { type: "string" },
+          },
+        ],
+        responseSchema: {
+          type: "object",
+          properties: {
+            ok: { type: "boolean" },
+            data: { type: "string" },
+          },
+          required: ["ok", "data"],
+        },
+      },
+    ],
+  });
+  app.get("/protected", charge, (_req, res) => {
+    res.json({ ok: true, data: "paid" });
+  });
+
+  const originalFetch = global.fetch;
+  const server = await listen(app).catch((error) => {
+    if (error?.code === "EPERM") {
+      t.skip("localhost listen is not permitted in this sandbox");
+      return null;
+    }
+    throw error;
+  });
+  if (!server) return;
+
+  const facilitatorCalls = [];
+  global.fetch = async (url, init) => {
+    const target = String(url);
+    if (target.startsWith(VALID_CONFIG.x402.facilitatorUrl)) {
+      facilitatorCalls.push({
+        url: target,
+        body: init?.body ? JSON.parse(init.body) : undefined,
+      });
+
+      if (target.endsWith("/verify")) {
+        return fakeFetchResponse({ ok: true, json: { isValid: true } });
+      }
+      return fakeFetchResponse({
+        ok: true,
+        json: { success: true, transaction: `0x${"d".repeat(64)}` },
+      });
+    }
+    return originalFetch(url, init);
+  };
+
+  try {
+    const address = server.address();
+    assert.ok(address && typeof address === "object");
+    const baseUrl = `http://127.0.0.1:${address.port}`;
+
+    const discovery = await originalFetch(`${baseUrl}/openapi.json`);
+    assert.equal(discovery.status, 200);
+    const spec = await discovery.json();
+    assert.equal(spec.paths["/protected"].get.operationId, "getProtected");
+    assert.equal(spec.servers[0].url, baseUrl);
+
+    const challenge = await originalFetch(`${baseUrl}/protected?id=abc`);
+    assert.equal(challenge.status, 402);
+    const paymentRequired = decodeBase64Json(challenge.headers.get("payment-required"));
+    assert.equal(paymentRequired.accepts[0].amount, "20000");
+    assert.equal(paymentRequired.accepts[0].payTo, VALID_CONFIG.x402.payTo);
+    assert.equal(paymentRequired.accepts[0].resource, `${baseUrl}/protected`);
+    assert.ok(challenge.headers.get("www-authenticate"));
+
+    const paid = await originalFetch(`${baseUrl}/protected?id=abc`, {
+      headers: { "Payment-Signature": makePaymentSignature() },
+    });
+    assert.equal(paid.status, 200);
+    assert.deepEqual(await paid.json(), { ok: true, data: "paid" });
+    assert.deepEqual(
+      facilitatorCalls.map((call) => call.url),
+      [
+        `${VALID_CONFIG.x402.facilitatorUrl}/verify`,
+        `${VALID_CONFIG.x402.facilitatorUrl}/settle`,
+      ],
+    );
+    assert.equal(facilitatorCalls[0].body.paymentRequirements.amount, "20000");
+    assert.equal(facilitatorCalls[1].body.paymentRequirements.payTo, VALID_CONFIG.x402.payTo);
+
+    const receipt = decodeBase64Json(paid.headers.get("payment-response"));
+    assert.equal(receipt.success, true);
+    assert.equal(receipt.network, VALID_CONFIG.x402.network);
+    assert.equal(receipt.txHash, `0x${"d".repeat(64)}`);
+  } finally {
+    global.fetch = originalFetch;
+    await closeServer(server);
   }
 });
 
