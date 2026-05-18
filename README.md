@@ -28,28 +28,59 @@ This package is opinionated toward the production patterns used in `NYCTransitLi
 
 ## Quickstart
 
-Three pieces: create the middleware, attach it to a route, describe the route for discovery.
+Three pieces: create the middleware, define a paid route, expose discovery.
 
 ```js
 import express from "express";
-import { createDual402, dualDiscovery } from "dual402";
+import { createDual402, dualDiscovery, paidRoute } from "dual402";
 
 const app = express();
 
-// 1. One-time setup
+// 1. One-time setup: explicit payment config, matching mppx/x402 style
 const dual = createDual402({
-  mpp:  { currency, recipient, secretKey },
-  x402: { payTo, network, facilitatorUrl },
+  mpp: {
+    currency: process.env.USDC_TEMPO,
+    recipient: process.env.MPP_RECIPIENT,
+    secretKey: process.env.MPP_SECRET_KEY,
+    testnet: process.env.MPP_TESTNET === "true",
+  },
+  x402: {
+    payTo: process.env.X402_PAYEE_ADDRESS,
+    network: process.env.X402_NETWORK || "eip155:84532",
+    facilitatorUrl: process.env.X402_FACILITATOR_URL || "https://x402.org/facilitator",
+  },
 });
 
-// 2. Attach per-route charge middleware
-const chargeQuote = dual.charge({ amount: "0.02", description: "Quote lookup" });
-app.get("/quote", chargeQuote, (req, res) => res.json({ price: 42 }));
+// 2. Define the paid route once. The returned object is used for both
+// Express middleware and discovery metadata.
+const quote = paidRoute(dual, {
+  method: "get",
+  path: "/quote",
+  amount: "0.02",
+  operationId: "getQuote",
+  summary: "Get a quote",
+  parameters: [
+    { name: "symbol", in: "query", required: true, schema: { type: "string" } },
+  ],
+  responseSchema: {
+    type: "object",
+    properties: { symbol: { type: "string" }, price: { type: "number" } },
+    required: ["symbol", "price"],
+  },
+});
+
+app.get(quote.path, quote.handler, (req, res) => {
+  res.json({ symbol: req.query.symbol, price: 42 });
+});
 
 // 3. Expose /openapi.json and /.well-known/x402
 dualDiscovery(app, dual, {
-  info: { title: "Example API", version: "1.0.0" },
-  routes: [{ method: "get", path: "/quote", handler: chargeQuote }],
+  info: {
+    title: "Example API",
+    description: "Paid quote API",
+    version: "1.0.0",
+  },
+  routes: [quote],
 });
 ```
 
@@ -57,13 +88,28 @@ That's the whole surface. Every unauthenticated request gets a 402 with both pay
 
 Looking for a runnable project you can deploy? The [starter](https://github.com/mmurrs/dual402-starter) wires this up with a Dockerfile and a one-command EigenCompute deploy.
 
+## Try the Example
+
+```bash
+cp .env.example .env
+# Fill in MPP_SECRET_KEY, USDC_TEMPO, MPP_RECIPIENT, X402_PAYEE_ADDRESS.
+node --env-file=.env examples/minimal-api.js
+```
+
+Then inspect the unpaid challenge and discovery document:
+
+```bash
+curl -i "http://localhost:8080/quote?symbol=ETH"
+curl "http://localhost:8080/openapi.json"
+```
+
 ## Install
 
 ```bash
-npm install dual402 express mppx
+npm install dual402 express
 ```
 
-`express` is a peer dependency. `mppx` is the MPP reference client used under the hood.
+`express` is a peer dependency. `mppx` is the MPP reference implementation used under the hood.
 
 ## Base Mainnet
 
@@ -105,7 +151,34 @@ The middleware defaults USDC's x402 metadata to `{ name: "USD Coin", version: "2
 { "version": 1, "resources": ["GET /quote"] }
 ```
 
-Pricing, payee, and route-specific request hints belong in the runtime `PAYMENT-REQUIRED` header, not in static discovery. For POST/JSON routes, `dualDiscovery()` threads request/response schema hints into the challenge so clients can preserve the request body on paid retries.
+`/openapi.json` carries the richer service metadata. Paid operations include the canonical `x-payment-info.offers[]` shape used by MPP discovery, with both Tempo and x402 offers for the same route. Runtime `PAYMENT-REQUIRED` remains authoritative for exact payment terms and also carries Bazaar-style request/response schema hints so clients can preserve inputs on paid retries.
+
+## Standards Alignment
+
+`dual402` keeps the public API close to the two reference libraries:
+
+- MPP/mppx: one server object, one `charge({ amount })` middleware per protected route, and OpenAPI discovery with `x-payment-info.offers[]`.
+- x402: route-level payment requirements with `scheme`, `network`, `payTo`, facilitator verify/settle, and a `PAYMENT-REQUIRED` challenge clients can pay and retry.
+
+The helper path is intentionally narrower than either underlying SDK:
+
+```js
+const dual = createDual402({
+  mpp: { currency, recipient, secretKey },
+  x402: { payTo, network, facilitatorUrl },
+});
+const quote = paidRoute(dual, {
+  method: "get",
+  path: "/quote",
+  amount: "0.02",
+  operationId: "getQuote",
+  summary: "Get a quote",
+});
+app.get(quote.path, quote.handler, handler);
+dualDiscovery(app, dual, { routes: [quote] });
+```
+
+Use `dual.charge()` directly when you want the lower-level mppx-style middleware shape.
 
 ## Config
 
@@ -133,7 +206,7 @@ The smoke suite covers:
 
 ## Notes
 
-- `waitForSettle: true` makes x402 settlement blocking for that route
+- x402 settlement is blocking by default; use `waitForSettle: false` only for low-value routes
 - `PAYMENT-RESPONSE` is kept for clients, but logs mask transaction hashes
 - `BASE_URL` is preferred over whatever internal host the app sees at runtime
 

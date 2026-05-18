@@ -400,13 +400,23 @@ function canonicalizeRequirements(
   };
 }
 
-function canonicalizePaymentPayload(payload: JsonObject): JsonObject {
+function canonicalizePaymentPayload(
+  payload: JsonObject,
+  fallbackResource?: string,
+): JsonObject {
   const accepted = asObject((payload as { accepted?: unknown }).accepted);
-  if (!accepted) return payload;
-  return {
-    ...payload,
-    accepted: canonicalizeRequirements(accepted),
-  };
+  const next: JsonObject = accepted
+    ? {
+        ...payload,
+        accepted: canonicalizeRequirements(accepted),
+      }
+    : { ...payload };
+
+  if (fallbackResource && typeof next.resource !== "string") {
+    next.resource = fallbackResource;
+  }
+
+  return next;
 }
 
 export async function x402Verify(
@@ -492,7 +502,10 @@ export async function x402Verify(
     return { valid: false, reason: "payee_mismatch" };
   }
 
-  const wirePayload = canonicalizePaymentPayload(payload);
+  const wirePayload = canonicalizePaymentPayload(
+    payload,
+    expected.paymentRequirements?.resource,
+  );
   const wireRequirements = canonicalizeRequirements(expected.paymentRequirements);
   const body =
     wireRequirements && expected.paymentRequirements

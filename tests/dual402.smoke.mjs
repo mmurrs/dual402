@@ -3,7 +3,11 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import express from "express";
 
-import { createDual402, dualDiscovery } from "../dist/express.js";
+import {
+  createDual402,
+  dualDiscovery,
+  paidRoute,
+} from "../dist/express.js";
 
 const VALID_CONFIG = {
   mpp: {
@@ -370,6 +374,98 @@ test("dualDiscovery normalizes uppercase OpenAPI method keys", async () => {
   assert.equal(res.body.paths["/caps"].GET, undefined);
 });
 
+test("paidRoute defines payment middleware and discovery metadata together", async () => {
+  const app = makeApp();
+  const dual = createDual402(VALID_CONFIG);
+  const route = paidRoute(dual, {
+    method: "GET",
+    path: "/quote",
+    amount: "0.02",
+    paymentDescription: "Quote lookup",
+    operationId: "getQuote",
+    summary: "Get quote",
+    parameters: [
+      { name: "symbol", in: "query", required: true, schema: { type: "string" } },
+    ],
+    responseSchema: {
+      type: "object",
+      properties: { price: { type: "number" } },
+      required: ["price"],
+    },
+  });
+
+  assert.equal(route.handler._dualAmount, "0.02");
+  assert.equal(route.handler._dualDescription, "Quote lookup");
+
+  dualDiscovery(app, dual, { routes: [route] });
+
+  const openapiRes = makeRes();
+  await app.routes.get("/openapi.json")(makeReq(), openapiRes);
+  const operation = openapiRes.body.paths["/quote"].get;
+  assert.equal(operation.operationId, "getQuote");
+  assert.deepEqual(operation["x-payment-info"].offers, [
+    {
+      amount: "20000",
+      currency: VALID_CONFIG.mpp.currency,
+      description: "Quote lookup",
+      intent: "charge",
+      method: "tempo",
+    },
+    {
+      amount: "20000",
+      currency: dual._x402Asset,
+      description: "Quote lookup",
+      intent: "charge",
+      method: "x402",
+      network: VALID_CONFIG.x402.network,
+      payTo: VALID_CONFIG.x402.payTo,
+      scheme: "exact",
+    },
+  ]);
+  assert.equal(operation.parameters[0].name, "symbol");
+});
+
+test("dualDiscovery rejects discovery metadata that would be ambiguous", () => {
+  const app = makeApp();
+  const dual = createDual402(VALID_CONFIG);
+  const charge = dual.charge({ amount: "0.02" });
+  const baseRoute = {
+    method: "get",
+    path: "/quote",
+    handler: charge,
+    operationId: "getQuote",
+    summary: "Get quote",
+  };
+
+  assert.throws(
+    () => dualDiscovery(app, dual, { routes: [{ ...baseRoute, path: "quote" }] }),
+    /absolute path/,
+  );
+  assert.throws(
+    () => dualDiscovery(app, dual, { routes: [{ ...baseRoute, method: "bad method" }] }),
+    /invalid HTTP method/,
+  );
+  assert.throws(
+    () => dualDiscovery(app, dual, { routes: [{ ...baseRoute, operationId: "" }] }),
+    /operationId/,
+  );
+  assert.throws(
+    () => dualDiscovery(app, dual, { routes: [{ ...baseRoute, summary: "" }] }),
+    /summary/,
+  );
+  assert.throws(
+    () => dualDiscovery(app, dual, { routes: [baseRoute, { ...baseRoute }] }),
+    /duplicate route GET \/quote/,
+  );
+  assert.throws(
+    () =>
+      dualDiscovery(app, dual, {
+        routes: [baseRoute, { ...baseRoute, path: "/other" }],
+      }),
+    /duplicate operationId "getQuote"/,
+  );
+});
+
 test("verified x402 requests use CDP body shape and attach receipt headers", async () => {
   const { privateKey } = crypto.generateKeyPairSync("ed25519");
   const apiKeySecret = privateKey
@@ -469,6 +565,7 @@ test("verified x402 requests use CDP body shape and attach receipt headers", asy
     assert.equal(calls[0].body.x402Version, 2);
     assert.equal(calls[0].body.paymentRequirements.amount, "20000");
     assert.equal(calls[0].body.paymentRequirements.extra.name, "USD Coin");
+    assert.equal(calls[0].body.paymentPayload.resource, "https://public.example/paid");
     assert.equal(calls[0].body.paymentRequirements.resource, undefined);
     assert.equal(calls[0].body.paymentPayload.accepted.resource, undefined);
 
@@ -580,6 +677,7 @@ test("Express app performs full unpaid challenge then x402 paid retry flow", asy
       ],
     );
     assert.equal(facilitatorCalls[0].body.paymentRequirements.amount, "20000");
+    assert.equal(facilitatorCalls[0].body.paymentPayload.resource, `${baseUrl}/protected`);
     assert.equal(facilitatorCalls[1].body.paymentRequirements.payTo, VALID_CONFIG.x402.payTo);
 
     const receipt = decodeBase64Json(paid.headers.get("payment-response"));

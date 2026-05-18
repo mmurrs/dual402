@@ -92,6 +92,16 @@ export type ChargeOptions = {
   waitForSettle?: boolean;
 };
 
+/** Options for {@link paidRoute}: route metadata plus price. */
+export type PaidRouteOptions = Omit<DiscoveryRoute, "handler"> & {
+  /** Price in USDC as a decimal string. E.g. `"0.02"` = 2 cents. */
+  amount: string;
+  /** Short payment challenge description. Defaults to `summary`. ASCII only. */
+  paymentDescription?: string;
+  /** Block on x402 settlement before returning the response. Default is `true`. */
+  waitForSettle?: boolean;
+};
+
 /**
  * One paid route, as described to {@link dualDiscovery}. The `handler` must be the same
  * charge middleware passed to `app.get(...)` / `app.post(...)` — the discovery layer reads
@@ -166,6 +176,12 @@ type DualChargeHandler = RequestHandler & {
   _dualOutputSchemasByRoute?: Record<string, JsonSchema>;
 };
 
+type ResolvedMppConfig = Readonly<{
+  currency: `0x${string}`;
+  recipient: `0x${string}`;
+  testnet: boolean;
+}>;
+
 type ResolvedX402Config = Readonly<{
   payTo: `0x${string}`;
   network: string;
@@ -182,6 +198,8 @@ export type Dual402Instance = {
   charge(options: ChargeOptions): DualChargeHandler;
   /** @internal The underlying mppx instance. Prefer the public `charge()` API. */
   _mppx: any;
+  /** @internal Resolved MPP config after defaults and validation. */
+  _mppConfig: ResolvedMppConfig;
   /** @internal Resolved x402 config after defaults and validation. */
   _x402Config: ResolvedX402Config;
   /** @internal Resolved USDC contract address. */
@@ -203,11 +221,55 @@ const DEFAULT_RESPONSE_SCHEMA: JsonSchema = {
 };
 
 const EVM_ADDR_RE = /^0x[0-9a-fA-F]{40}$/;
+const HTTP_METHOD_RE = /^[A-Z]+$/;
+const OPENAPI_HTTP_METHODS = new Set([
+  "DELETE",
+  "GET",
+  "HEAD",
+  "OPTIONS",
+  "PATCH",
+  "POST",
+  "PUT",
+  "TRACE",
+]);
 const CDP_FACILITATOR_HOST = "api.cdp.coinbase.com";
 const DEFAULT_FACILITATOR_TIMEOUT_MS = (() => {
   const env = Number.parseInt(process.env.X402_FACILITATOR_TIMEOUT_MS ?? "", 10);
   return Number.isFinite(env) && env > 0 ? env : 5_000;
 })();
+
+/**
+ * Define a paid route once, then use the returned object for both Express mounting
+ * and `dualDiscovery()`.
+ *
+ * @example
+ * ```js
+ * const quote = paidRoute(dual, {
+ *   method: "get",
+ *   path: "/quote",
+ *   amount: "0.02",
+ *   operationId: "getQuote",
+ *   summary: "Get a quote",
+ * });
+ * app.get(quote.path, quote.handler, getQuote);
+ * dualDiscovery(app, dual, { routes: [quote] });
+ * ```
+ */
+export function paidRoute(
+  dual: Dual402Instance,
+  options: PaidRouteOptions,
+): DiscoveryRoute {
+  const { amount, paymentDescription, waitForSettle, ...route } = options;
+  assertDiscoveryRoute(route);
+  return {
+    ...route,
+    handler: dual.charge({
+      amount,
+      description: paymentDescription ?? route.summary,
+      waitForSettle,
+    }),
+  };
+}
 
 /**
  * Create a dual-protocol payment handler. Validates config, throws on mainnet misconfigurations
@@ -303,6 +365,11 @@ export function createDual402(config: Dual402Config): Dual402Instance {
 
   return {
     _mppx: mppx,
+    _mppConfig: Object.freeze({
+      currency: config.mpp.currency,
+      recipient: config.mpp.recipient,
+      testnet: config.mpp.testnet === true,
+    }),
     _x402Config: x402Config,
     _x402Asset: x402Asset,
 
@@ -459,11 +526,27 @@ export function dualDiscovery(
   config: DiscoveryConfig,
 ): void {
   const paths: Record<string, Record<string, unknown>> = {};
+  const operationIds = new Set<string>();
+  const routeKeys = new Set<string>();
 
   for (const route of config.routes) {
+    assertDiscoveryRoute(route);
+    const method = normalizeDiscoveryMethod(route.method);
+    const routeKey = `${method} ${route.path}`;
+
+    if (routeKeys.has(routeKey)) {
+      throw new Error(`dualDiscovery: duplicate route ${routeKey}.`);
+    }
+    routeKeys.add(routeKey);
+
+    if (operationIds.has(route.operationId)) {
+      throw new Error(`dualDiscovery: duplicate operationId "${route.operationId}".`);
+    }
+    operationIds.add(route.operationId);
+
     if (typeof route.handler?._dualAmount !== "string") {
       throw new Error(
-        `dualDiscovery: route ${route.method.toUpperCase()} ${route.path} is missing a dual402 charge handler.`,
+        `dualDiscovery: route ${routeKey} is missing a dual402 charge handler.`,
       );
     }
 
@@ -484,8 +567,6 @@ export function dualDiscovery(
       extractRequestBodySchema(requestBody) ??
       parametersToSchema(route.parameters);
     const outputSchema = route.responseSchema ?? DEFAULT_RESPONSE_SCHEMA;
-    const method = route.method.toUpperCase();
-
     if (inputSchema) {
       route.handler._dualInputSchema ??= inputSchema;
       route.handler._dualInputSchemasByMethod ??= {};
@@ -504,17 +585,7 @@ export function dualDiscovery(
       summary: route.summary,
       ...(route.description && { description: route.description }),
       tags: route.tags ?? [],
-      "x-payment-info": {
-        price: {
-          mode: "fixed",
-          currency: "USD",
-          amount: route.handler._dualAmount,
-        },
-        protocols: [
-          { x402: {} },
-          { mpp: { method: "tempo", intent: "charge", currency: "USDC" } },
-        ],
-      },
+      "x-payment-info": buildDiscoveryPaymentInfo(dual, route),
       responses: {
         200: {
           description: "Successful response",
@@ -537,7 +608,7 @@ export function dualDiscovery(
 
     paths[route.path] = {
       ...(paths[route.path] ?? {}),
-      [route.method.toLowerCase()]: operation,
+      [method.toLowerCase()]: operation,
     };
   }
 
@@ -569,10 +640,85 @@ export function dualDiscovery(
 
   app.get("/.well-known/x402", (req: Request, res: Response) => {
     const resources = Array.from(
-      new Set(config.routes.map((route) => `${route.method.toUpperCase()} ${route.path}`)),
+      new Set(
+        config.routes.map((route) => `${normalizeDiscoveryMethod(route.method)} ${route.path}`),
+      ),
     );
     res.json({ version: 1, resources });
   });
+}
+
+function buildDiscoveryPaymentInfo(
+  dual: Dual402Instance,
+  route: DiscoveryRoute,
+): JsonObject {
+  const amount = route.handler._dualAmount;
+  if (!amount) {
+    throw new Error(
+      `dualDiscovery: route ${route.method.toUpperCase()} ${route.path} is missing a payment amount.`,
+    );
+  }
+
+  const amountRaw = toSmallestUnit(amount, 6);
+  const description = route.handler._dualDescription ?? route.summary;
+  return {
+    offers: [
+      {
+        amount: amountRaw,
+        currency: dual._mppConfig.currency,
+        description,
+        intent: "charge",
+        method: "tempo",
+      },
+      {
+        amount: amountRaw,
+        currency: dual._x402Config.asset,
+        description,
+        intent: "charge",
+        method: "x402",
+        network: dual._x402Config.network,
+        payTo: dual._x402Config.payTo,
+        scheme: "exact",
+      },
+    ],
+  };
+}
+
+function assertDiscoveryRoute(
+  route:
+    | {
+        method?: unknown;
+        path?: unknown;
+        operationId?: unknown;
+        summary?: unknown;
+      }
+    | null
+    | undefined,
+): void {
+  const label = `${String(route?.method ?? "UNKNOWN").toUpperCase()} ${String(
+    route?.path ?? "",
+  )}`;
+  if (!route || typeof route.method !== "string" || route.method.trim() === "") {
+    throw new Error("dualDiscovery: every route needs a non-empty HTTP method.");
+  }
+  normalizeDiscoveryMethod(route.method);
+  if (typeof route.path !== "string" || !route.path.startsWith("/")) {
+    throw new Error(`dualDiscovery: route ${label} needs an absolute path starting with "/".`);
+  }
+  if (typeof route.operationId !== "string" || route.operationId.trim() === "") {
+    throw new Error(`dualDiscovery: route ${label} needs a stable operationId.`);
+  }
+  if (typeof route.summary !== "string" || route.summary.trim() === "") {
+    throw new Error(`dualDiscovery: route ${label} needs a short summary.`);
+  }
+}
+
+function normalizeDiscoveryMethod(method: string): string {
+  const normalized = String(method ?? "").trim().toUpperCase();
+  if (!HTTP_METHOD_RE.test(normalized) || !OPENAPI_HTTP_METHODS.has(normalized)) {
+    throw new Error(`dualDiscovery: invalid HTTP method ${JSON.stringify(method)}.`);
+  }
+  return normalized;
 }
 
 function assertConfig(config: Dual402Config): void {

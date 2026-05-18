@@ -17,6 +17,7 @@
   },
   "files": [
     "dist",
+    "examples",
     "README.md",
     "ARCHITECTURE.md",
     "LICENSE"
@@ -56,6 +57,7 @@
   "keywords": [
     "x402",
     "mpp",
+    "micropayments",
     "express",
     "payments",
     "tempo",
