@@ -1,7 +1,7 @@
 {
   "name": "dual402",
   "version": "0.1.2",
-  "description": "Express middleware that accepts both x402 and MPP payments on the same route",
+  "description": "Make Express APIs agent-payable with x402 and MPP on the same route, plus OpenAPI and /.well-known/x402 discovery.",
   "type": "module",
   "main": "dist/express.js",
   "types": "dist/express.d.ts",
@@ -16,8 +16,11 @@
     }
   },
   "files": [
+    "AGENTS.md",
+    ".env.example",
     "dist",
-    "examples",
+    "examples/README.md",
+    "examples/minimal-api.js",
     "README.md",
     "ARCHITECTURE.md",
     "LICENSE"
@@ -33,7 +36,7 @@
     "prepare": "npm run build"
   },
   "dependencies": {
-    "mppx": "0.6.14"
+    "mppx": "0.6.27"
   },
   "engines": {
     "node": ">=22"
@@ -57,10 +60,20 @@
   "keywords": [
     "x402",
     "mpp",
+    "mppx",
     "micropayments",
     "express",
+    "express-middleware",
+    "402",
     "payments",
+    "stablecoin",
+    "usdc",
     "tempo",
+    "base",
+    "coinbase",
+    "cdp",
+    "agentic",
+    "agents",
     "agentcash"
   ]
 }

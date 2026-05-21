@@ -27,9 +27,17 @@ function errorMessage(error: unknown): string {
 }
 
 /**
- * Parse a CDP API key secret into a Node crypto KeyObject. Accepts PEM blocks,
- * PKCS#8 DER (48-byte base64), or raw Ed25519 seeds (32 or 64 bytes base64).
- * Throws `cdp_key_unrecognized: ...` with the reason on unexpected formats.
+ * Parse a Coinbase Developer Platform API key secret into a Node `KeyObject`,
+ * normalizing across the formats CDP issues:
+ *
+ * - PEM block (begins with `-----BEGIN`)
+ * - PKCS#8 DER (48-byte base64 blob)
+ * - Raw Ed25519 seed (32 or 64 bytes, base64-encoded)
+ *
+ * Throws an `Error` whose message starts with `cdp_key_unrecognized:` when the
+ * input does not match any known shape. The message includes the byte length
+ * of the decoded blob, which is the most useful diagnostic for "I copy-pasted
+ * the wrong field from the CDP portal".
  */
 export function parseCdpPrivateKey(secret: string): crypto.KeyObject {
   const trimmed = String(secret).trim();
@@ -69,6 +77,16 @@ export function parseCdpPrivateKey(secret: string): crypto.KeyObject {
   });
 }
 
+/**
+ * Sign a short-lived CDP JWT for a single facilitator request. Used by the
+ * x402 verify/settle calls when the facilitator is hosted at
+ * `api.cdp.coinbase.com`.
+ *
+ * The token's `uris` claim binds it to one `${requestMethod} ${requestHost}${requestPath}`
+ * tuple, so it cannot be replayed against a different endpoint.
+ *
+ * @internal
+ */
 export function generateCdpJwt(args: {
   apiKeyId: string;
   apiKeySecret: string;

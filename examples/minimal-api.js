@@ -15,17 +15,34 @@ app.use((_req, res, next) => {
   next();
 });
 
+function requiredEnv(name) {
+  const value = process.env[name];
+  if (!value) throw new Error(`Missing required env var: ${name}`);
+  return value;
+}
+
+const x402FacilitatorUrl = requiredEnv("X402_FACILITATOR_URL");
+const cdpAuth =
+  new URL(x402FacilitatorUrl).host === "api.cdp.coinbase.com"
+    ? {
+        apiKeyId: requiredEnv("CDP_API_KEY_ID"),
+        apiKeySecret: requiredEnv("CDP_API_KEY_SECRET"),
+      }
+    : undefined;
+
 const dual = createDual402({
   mpp: {
-    currency: process.env.USDC_TEMPO,
-    recipient: process.env.MPP_RECIPIENT,
-    secretKey: process.env.MPP_SECRET_KEY,
+    currency: requiredEnv("USDC_TEMPO"),
+    recipient: requiredEnv("MPP_RECIPIENT"),
+    secretKey: requiredEnv("MPP_SECRET_KEY"),
     testnet: process.env.MPP_TESTNET === "true",
   },
   x402: {
-    payTo: process.env.X402_PAYEE_ADDRESS,
-    network: process.env.X402_NETWORK || "eip155:84532",
-    facilitatorUrl: process.env.X402_FACILITATOR_URL || "https://x402.org/facilitator",
+    payTo: requiredEnv("X402_PAYEE_ADDRESS"),
+    network: requiredEnv("X402_NETWORK"),
+    facilitatorUrl: x402FacilitatorUrl,
+    ...(process.env.X402_ASSET && { asset: process.env.X402_ASSET }),
+    ...(cdpAuth && { cdpAuth }),
   },
 });
 
@@ -69,9 +86,15 @@ dualDiscovery(app, dual, {
   routes: [quote],
 });
 
-app.get(quote.path, quote.handler, (req, res) => {
-  const symbol = String(req.query.symbol ?? "").toUpperCase();
+function validateQuoteRequest(req, res, next) {
+  const symbol = String(req.query.symbol ?? "").trim().toUpperCase();
   if (!symbol) return res.status(400).json({ error: "symbol is required" });
+  req.symbol = symbol;
+  return next();
+}
+
+app.get(quote.path, validateQuoteRequest, quote.handler, (req, res) => {
+  const symbol = req.symbol;
   res.json({ symbol, price: 42, currency: "USD" });
 });
 
