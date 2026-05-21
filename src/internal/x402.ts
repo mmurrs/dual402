@@ -65,10 +65,8 @@ export function sanitizeLogValue(value: unknown, limit = 80): string {
 }
 
 /**
- * Shorten a hex string for safe logging — `0xabc...1234` by default.
- * Use for payer/wallet addresses and transaction hashes in public boot logs;
- * the full value is too noisy for routine output and shouldn't go on a
- * shared third-party-auditable log surface unmasked.
+ * Shorten a hex string for safe logging. `0xabc...1234` by default.
+ * Use for payer/wallet addresses and tx hashes in public logs.
  */
 export function maskHex(
   value: unknown,
