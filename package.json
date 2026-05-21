@@ -1,7 +1,7 @@
 {
   "name": "dual402",
   "version": "0.1.2",
-  "description": "Make Express APIs agent-payable with x402 and MPP on the same route, plus OpenAPI and /.well-known/x402 discovery.",
+  "description": "Add monetization and discoverability to Express APIs with x402, MPP, OpenAPI, and /.well-known/x402.",
   "type": "module",
   "main": "dist/express.js",
   "types": "dist/express.d.ts",

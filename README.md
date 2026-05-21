@@ -15,10 +15,11 @@ markets, and agent clients can index.
 ## Install
 
 ```bash
-npm install dual402 express@^5
+npm i dual402
 ```
 
-Node 22 or newer is required. `express@^5` is a peer dependency.
+Node 22 or newer is required. `express@^5` is a peer dependency; install it
+separately when you are starting from an empty project.
 
 ## Quickstart: Monetize + Discover
 

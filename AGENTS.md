@@ -12,10 +12,11 @@ them produces a broken or insecure deployment.
 ## Install
 
 ```bash
-npm install dual402 express@^5
+npm i dual402
 ```
 
-`express@^5` is a peer dependency. Node 22 or newer is required.
+`express@^5` is a peer dependency. Install it separately when the target app is
+not already an Express 5 service. Node 22 or newer is required.
 
 ## Environment
 
