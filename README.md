@@ -1,58 +1,68 @@
 # dual402
 
-One Express middleware. Accepts both x402 (Base USDC) and MPP (Tempo USDC) on every route. One 402 response carries both challenges; the server accepts whichever signed credential comes back.
+dual402 collapses the paid API setup into one route definition. Add a price
+and schema to an Express route, and you get monetization plus discoverability:
+one `402 Payment Required` with both [x402](https://x402.org) (Base USDC) and
+[MPP](https://mpp.dev) (Tempo USDC), plus metadata that scanners, agent
+markets, and agent clients can index.
+
+- Monetization: charge pay-per-request USDC without building a billing system.
+- Discoverability: publish OpenAPI and `/.well-known/x402` from the same route
+  definition.
+- Protocol reach: accept both x402 and MPP clients out of the box.
+- Express ergonomics: validate first, charge, then run the handler.
+
+## Install
 
 ```bash
-npm install dual402
+npm install dual402 express@^5
 ```
 
-Starter template: https://github.com/mmurrs/dual402-starter
+Node 22 or newer is required. `express@^5` is a peer dependency.
 
-Protocol references: [x402.org](https://x402.org) · [mpp.dev](https://mpp.dev).
+## Quickstart: Monetize + Discover
 
-## Quick prompt
-
-Hand this to your coding agent and it can take it from here:
-
-```
-Read github.com/mmurrs/dual402 and add dual x402 + MPP payments to my Express service.
-```
-
-## Scope
-
-- x402: EVM-style payee / asset configuration, facilitator-based verify + settle
-- MPP: delegated to `mppx` / Tempo
-- Discovery: `GET /openapi.json` plus `GET /.well-known/x402`
-
-This package is opinionated toward the production patterns used in `NYCTransitLive-x402`: strict local amount/payee checks, CDP auth support for Base mainnet, minimal static discovery, and challenge metadata that helps AgentCash-style clients retry correctly.
-
-## Quickstart
-
-Three pieces: create the middleware, define a paid route, expose discovery.
+The key helper is `paidRoute()`: it creates the payment middleware and the
+discovery metadata together.
 
 ```js
 import express from "express";
 import { createDual402, dualDiscovery, paidRoute } from "dual402";
 
 const app = express();
+app.use(express.json());
 
-// 1. One-time setup: explicit payment config, matching mppx/x402 style
+function requiredEnv(name) {
+  const value = process.env[name];
+  if (!value) throw new Error(`Missing required env var: ${name}`);
+  return value;
+}
+
+const facilitatorUrl = requiredEnv("X402_FACILITATOR_URL");
+const cdpAuth =
+  new URL(facilitatorUrl).host === "api.cdp.coinbase.com"
+    ? {
+        apiKeyId: requiredEnv("CDP_API_KEY_ID"),
+        apiKeySecret: requiredEnv("CDP_API_KEY_SECRET"),
+      }
+    : undefined;
+
 const dual = createDual402({
   mpp: {
-    currency: process.env.USDC_TEMPO,
-    recipient: process.env.MPP_RECIPIENT,
-    secretKey: process.env.MPP_SECRET_KEY,
+    currency: requiredEnv("USDC_TEMPO"),
+    recipient: requiredEnv("MPP_RECIPIENT"),
+    secretKey: requiredEnv("MPP_SECRET_KEY"),
     testnet: process.env.MPP_TESTNET === "true",
   },
   x402: {
-    payTo: process.env.X402_PAYEE_ADDRESS,
-    network: process.env.X402_NETWORK || "eip155:84532",
-    facilitatorUrl: process.env.X402_FACILITATOR_URL || "https://x402.org/facilitator",
+    payTo: requiredEnv("X402_PAYEE_ADDRESS"),
+    network: requiredEnv("X402_NETWORK"),
+    facilitatorUrl,
+    ...(process.env.X402_ASSET && { asset: process.env.X402_ASSET }),
+    ...(cdpAuth && { cdpAuth }),
   },
 });
 
-// 2. Define the paid route once. The returned object is used for both
-// Express middleware and discovery metadata.
 const quote = paidRoute(dual, {
   method: "get",
   path: "/quote",
@@ -64,56 +74,58 @@ const quote = paidRoute(dual, {
   ],
   responseSchema: {
     type: "object",
-    properties: { symbol: { type: "string" }, price: { type: "number" } },
+    properties: {
+      symbol: { type: "string" },
+      price: { type: "number" },
+    },
     required: ["symbol", "price"],
   },
 });
 
-app.get(quote.path, quote.handler, (req, res) => {
-  res.json({ symbol: req.query.symbol, price: 42 });
+function validateQuote(req, res, next) {
+  const symbol = String(req.query.symbol ?? "").trim();
+  if (!symbol) return res.status(400).json({ error: "symbol is required" });
+  req.symbol = symbol.toUpperCase();
+  return next();
+}
+
+app.get(quote.path, validateQuote, quote.handler, (req, res) => {
+  res.json({ symbol: req.symbol, price: 42 });
 });
 
-// 3. Expose /openapi.json and /.well-known/x402
 dualDiscovery(app, dual, {
-  info: {
-    title: "Example API",
-    description: "Paid quote API",
-    version: "1.0.0",
-  },
+  info: { title: "Quote API", description: "", version: "1.0.0" },
   routes: [quote],
 });
 ```
 
-That's the whole surface. Every unauthenticated request gets a 402 with both payment challenges; any compliant client pays and proceeds.
+That is the collapsed flow: `/quote` is monetized, discoverable, and still just
+an Express route. Invalid requests stay free, valid unpaid requests receive both
+payment challenges, and paid retries continue to the protected handler.
 
-Looking for a runnable project you can deploy? The [starter](https://github.com/mmurrs/dual402-starter) wires this up with a Dockerfile and a one-command EigenCompute deploy.
-
-## Try the Example
+## Example
 
 ```bash
 cp .env.example .env
-# Fill in MPP_SECRET_KEY, USDC_TEMPO, MPP_RECIPIENT, X402_PAYEE_ADDRESS.
+npm run build
 node --env-file=.env examples/minimal-api.js
 ```
 
-Then inspect the unpaid challenge and discovery document:
-
 ```bash
 curl -i "http://localhost:8080/quote?symbol=ETH"
-curl "http://localhost:8080/openapi.json"
+curl    "http://localhost:8080/openapi.json"
+curl    "http://localhost:8080/.well-known/x402"
 ```
 
-## Install
+## Config
 
-```bash
-npm install dual402 express
-```
+Start from [.env.example](.env.example). The required values are:
 
-`express` is a peer dependency. `mppx` is the MPP reference implementation used under the hood.
+- MPP: `MPP_SECRET_KEY`, `USDC_TEMPO`, `MPP_RECIPIENT`, `MPP_TESTNET`
+- x402: `X402_PAYEE_ADDRESS`, `X402_NETWORK`, `X402_FACILITATOR_URL`
+- recommended behind proxies: `BASE_URL`
 
-## Base Mainnet
-
-For Base mainnet, do not use `https://x402.org/facilitator`. That host is for Base Sepolia testing. Use Coinbase's CDP facilitator instead:
+For Base mainnet, use Coinbase's CDP facilitator and credentials:
 
 ```env
 X402_NETWORK=eip155:8453
@@ -122,73 +134,26 @@ CDP_API_KEY_ID=...
 CDP_API_KEY_SECRET=...
 ```
 
-And configure:
+`createDual402()` fails fast for common money-routing mistakes, including Base
+mainnet with the public Sepolia facilitator and CDP facilitator usage without
+CDP credentials.
 
-```js
-x402: {
-  payTo: process.env.X402_PAYEE_ADDRESS,
-  network: process.env.X402_NETWORK,
-  facilitatorUrl: process.env.X402_FACILITATOR_URL,
-  cdpAuth: {
-    apiKeyId: process.env.CDP_API_KEY_ID,
-    apiKeySecret: process.env.CDP_API_KEY_SECRET,
-  },
-}
+## API
+
+- `createDual402(config)` validates shared x402 and MPP configuration.
+- `paidRoute(dual, options)` creates route middleware and discovery metadata.
+- `dualDiscovery(app, dual, config)` mounts `GET /openapi.json` and
+  `GET /.well-known/x402`.
+- `dual.charge({ amount, description?, waitForSettle? })` is the lower-level
+  middleware factory when you do not need discovery metadata.
+
+For production integration details, hand the packaged agent guide to your
+coding agent:
+
+```text
+Install dual402, read node_modules/dual402/AGENTS.md, and make my Express API
+accept paid requests through both x402 and MPP.
 ```
-
-Two practical rules matter here:
-
-- `extra.name` for USDC must resolve to `USD Coin`, not `USDC`
-- your merchant wallet must differ from the wallet you use to test payments
-
-The middleware defaults USDC's x402 metadata to `{ name: "USD Coin", version: "2" }` for this reason.
-
-## Discovery Notes
-
-`dualDiscovery()` keeps `/.well-known/x402` intentionally minimal:
-
-```json
-{ "version": 1, "resources": ["GET /quote"] }
-```
-
-`/openapi.json` carries the richer service metadata. Paid operations include the canonical `x-payment-info.offers[]` shape used by MPP discovery, with both Tempo and x402 offers for the same route. Runtime `PAYMENT-REQUIRED` remains authoritative for exact payment terms and also carries Bazaar-style request/response schema hints so clients can preserve inputs on paid retries.
-
-## Standards Alignment
-
-`dual402` keeps the public API close to the two reference libraries:
-
-- MPP/mppx: one server object, one `charge({ amount })` middleware per protected route, and OpenAPI discovery with `x-payment-info.offers[]`.
-- x402: route-level payment requirements with `scheme`, `network`, `payTo`, facilitator verify/settle, and a `PAYMENT-REQUIRED` challenge clients can pay and retry.
-
-The helper path is intentionally narrower than either underlying SDK:
-
-```js
-const dual = createDual402({
-  mpp: { currency, recipient, secretKey },
-  x402: { payTo, network, facilitatorUrl },
-});
-const quote = paidRoute(dual, {
-  method: "get",
-  path: "/quote",
-  amount: "0.02",
-  operationId: "getQuote",
-  summary: "Get a quote",
-});
-app.get(quote.path, quote.handler, handler);
-dualDiscovery(app, dual, { routes: [quote] });
-```
-
-Use `dual.charge()` directly when you want the lower-level mppx-style middleware shape.
-
-## Config
-
-Core values are shown in [.env.example](.env.example).
-
-- `MPP_SECRET_KEY`, `USDC_TEMPO`, `MPP_RECIPIENT` are required for MPP
-- `X402_PAYEE_ADDRESS`, `X402_NETWORK`, `X402_FACILITATOR_URL` are required for x402
-- `BASE_URL` is recommended when the service sits behind a proxy or custom domain
-- `MPP_REALM` lets you override the realm advertised in MPP challenges
-- `CDP_API_KEY_ID` / `CDP_API_KEY_SECRET` are only needed for CDP-hosted facilitation
 
 ## Testing
 
@@ -196,20 +161,6 @@ Core values are shown in [.env.example](.env.example).
 npm test
 ```
 
-The smoke suite covers:
+## License
 
-- config validation
-- dual 402 header injection
-- route-scoped discovery metadata
-- CDP verify / settle wire format
-- fail-closed local payee checks
-
-## Notes
-
-- x402 settlement is blocking by default; use `waitForSettle: false` only for low-value routes
-- `PAYMENT-RESPONSE` is kept for clients, but logs mask transaction hashes
-- `BASE_URL` is preferred over whatever internal host the app sees at runtime
-
-## Architecture
-
-[ARCHITECTURE.md](ARCHITECTURE.md) has the longer protocol walkthrough.
+MIT
