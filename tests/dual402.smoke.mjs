@@ -776,6 +776,38 @@ test("onVerify runs only after facilitator verification and before settlement", 
   }
 });
 
+test("onVerify is read from config at request time", async () => {
+  const events = [];
+  const config = { ...VALID_CONFIG };
+  const dual = createDual402(config);
+  const handler = dual.charge({ amount: "0.02" });
+  config.onVerify = () => {
+    events.push("late-hook");
+  };
+
+  const originalFetch = global.fetch;
+  global.fetch = async (url) => {
+    if (String(url).endsWith("/verify")) {
+      return fakeFetchResponse({ ok: true, json: { isValid: true } });
+    }
+    return fakeFetchResponse({
+      ok: true,
+      json: { success: true, transaction: `0x${"c".repeat(64)}` },
+    });
+  };
+
+  try {
+    await runHandler(
+      handler,
+      makeReq({ headers: { "payment-signature": makePaymentSignature() } }),
+      makeRes(),
+    );
+    assert.deepEqual(events, ["late-hook"]);
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
 test("local missing amount or payee fails closed before calling the facilitator", async () => {
   const dual = createDual402(VALID_CONFIG);
   const handler = dual.charge({ amount: "0.02", description: "Missing field test" });
