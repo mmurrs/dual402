@@ -96,6 +96,8 @@ app.get(quote.path, validateQuote, quote.handler, (req, res) => {
 
 dualDiscovery(app, dual, {
   info: { title: "Quote API", description: "", version: "1.0.0" },
+  serviceName: "Quote API",
+  tags: ["finance", "quotes"],
   routes: [quote],
 });
 ```
@@ -144,7 +146,9 @@ CDP credentials.
 - `createDual402(config)` validates shared x402 and MPP configuration.
 - `paidRoute(dual, options)` creates route middleware and discovery metadata.
 - `dualDiscovery(app, dual, config)` mounts `GET /openapi.json` and
-  `GET /.well-known/x402`.
+  `GET /.well-known/x402`. Set `serviceName`, `tags`, and `iconUrl` to surface
+  Bazaar-style identity metadata in the x402 `resource` object and discovery
+  manifest.
 - `dual.charge({ amount, description?, waitForSettle? })` is the lower-level
   middleware factory when you do not need discovery metadata.
 

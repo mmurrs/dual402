@@ -1,6 +1,8 @@
 import type { Express, Request, Response } from "express";
 
 import {
+  buildAcceptsEntry,
+  buildBazaarExtensions,
   extractRequestBodySchema,
   parametersToSchema,
   resolveBaseUrl,
@@ -66,8 +68,9 @@ export function paidRoute(
  * The OpenAPI spec is built from the `routes` you pass - every paid operation
  * advertises both an MPP and an x402 offer in its `x-payment-info.offers[]`,
  * with matching amounts and the configured payee/network. The
- * `/.well-known/x402` document is intentionally minimal:
- * `{ version: 1, resources: ["GET /quote"] }`.
+ * `/.well-known/x402` document publishes Bazaar-style x402 resource metadata
+ * including service name, route tags, icon URL, payment requirements, and
+ * request/response schema extensions.
  *
  * Runtime `PAYMENT-REQUIRED` headers carry the richer per-route
  * request/response schema hints, so agent clients can preserve their inputs on
@@ -85,6 +88,9 @@ export function dualDiscovery(
   const paths: Record<string, Record<string, unknown>> = {};
   const operationIds = new Set<string>();
   const routeKeys = new Set<string>();
+  const mountedAt = new Date().toISOString();
+  const serviceName = config.serviceName ?? config.info?.title;
+  const serviceTags = normalizeTags(config.tags);
 
   for (const route of config.routes) {
     assertDiscoveryRoute(route);
@@ -136,6 +142,14 @@ export function dualDiscovery(
     route.handler._dualOutputSchemasByMethod[method] = outputSchema;
     route.handler._dualOutputSchemasByRoute ??= {};
     route.handler._dualOutputSchemasByRoute[`${method} ${route.path}`] = outputSchema;
+    if (serviceName) route.handler._dualServiceName = serviceName;
+    const routeTags = mergeTags(serviceTags, route.tags);
+    if (routeTags.length > 0) {
+      route.handler._dualTags ??= routeTags;
+      route.handler._dualTagsByRoute ??= {};
+      route.handler._dualTagsByRoute[`${method} ${route.path}`] = routeTags;
+    }
+    if (config.iconUrl) route.handler._dualIconUrl = config.iconUrl;
 
     const operation: Record<string, unknown> = {
       operationId: route.operationId,
@@ -184,7 +198,18 @@ export function dualDiscovery(
   };
 
   if (config.serviceInfo) {
-    spec["x-service-info"] = config.serviceInfo;
+    spec["x-service-info"] = {
+      ...config.serviceInfo,
+      ...(serviceName && { serviceName }),
+      ...(serviceTags.length > 0 && { tags: serviceTags }),
+      ...(config.iconUrl && { iconUrl: config.iconUrl }),
+    };
+  } else if (serviceName || serviceTags.length > 0 || config.iconUrl) {
+    spec["x-service-info"] = {
+      ...(serviceName && { serviceName }),
+      ...(serviceTags.length > 0 && { tags: serviceTags }),
+      ...(config.iconUrl && { iconUrl: config.iconUrl }),
+    };
   }
 
   app.get("/openapi.json", (req: Request, res: Response) => {
@@ -196,13 +221,82 @@ export function dualDiscovery(
   });
 
   app.get("/.well-known/x402", (req: Request, res: Response) => {
-    const resources = Array.from(
-      new Set(
-        config.routes.map((route) => `${normalizeDiscoveryMethod(route.method)} ${route.path}`),
-      ),
+    const baseUrl = resolveBaseUrl(req);
+    const resources = config.routes.map((route) =>
+      buildX402Resource({
+        baseUrl,
+        config,
+        dual,
+        mountedAt,
+        route,
+      }),
     );
-    res.json({ version: 1, resources });
+    res.json({
+      x402Version: 2,
+      payTo: dual._x402Config.payTo,
+      resources,
+      pagination: {
+        limit: resources.length,
+        offset: 0,
+        total: resources.length,
+      },
+    });
   });
+}
+
+function buildX402Resource(args: {
+  baseUrl: string;
+  config: DiscoveryConfig;
+  dual: Dual402Instance;
+  mountedAt: string;
+  route: DiscoveryRoute;
+}): JsonObject {
+  const { baseUrl, config, dual, mountedAt, route } = args;
+  const amount = route.handler._dualAmount;
+  if (!amount) {
+    throw new Error(
+      `dualDiscovery: route ${route.method.toUpperCase()} ${route.path} is missing a payment amount.`,
+    );
+  }
+
+  const method = normalizeDiscoveryMethod(route.method);
+  const routeKey = `${method} ${route.path}`;
+  const resourceUrl = `${baseUrl}${route.path}`;
+  const description = route.description ?? route.handler._dualDescription ?? route.summary;
+  const inputSchema =
+    route.handler._dualInputSchemasByRoute?.[routeKey] ??
+    route.handler._dualInputSchemasByMethod?.[method] ??
+    route.handler._dualInputSchema;
+  const outputSchema =
+    route.handler._dualOutputSchemasByRoute?.[routeKey] ??
+    route.handler._dualOutputSchemasByMethod?.[method] ??
+    route.handler._dualOutputSchema;
+  const extensions = buildBazaarExtensions({ method, inputSchema, outputSchema });
+  const serviceName = config.serviceName ?? config.info?.title;
+  const tags = mergeTags(config.tags, route.tags);
+
+  return {
+    resource: resourceUrl,
+    description,
+    type: "http",
+    x402Version: 2,
+    lastUpdated: mountedAt,
+    accepts: [
+      buildAcceptsEntry({
+        network: dual._x402Config.network,
+        amountRaw: toSmallestUnit(amount, 6),
+        asset: dual._x402Config.asset,
+        payTo: dual._x402Config.payTo,
+        resourceUrl,
+        description,
+        extra: dual._x402Config.extra,
+      }),
+    ],
+    ...(extensions && { extensions }),
+    ...(serviceName && { serviceName }),
+    ...(tags.length > 0 && { tags }),
+    ...(config.iconUrl && { iconUrl: config.iconUrl }),
+  };
 }
 
 function buildDiscoveryPaymentInfo(
@@ -239,6 +333,22 @@ function buildDiscoveryPaymentInfo(
       },
     ],
   };
+}
+
+function normalizeTags(tags: readonly string[] | undefined): string[] {
+  const normalized = new Set<string>();
+  for (const tag of tags ?? []) {
+    const value = String(tag).trim();
+    if (value) normalized.add(value);
+  }
+  return Array.from(normalized);
+}
+
+function mergeTags(
+  first: readonly string[] | undefined,
+  second: readonly string[] | undefined,
+): string[] {
+  return normalizeTags([...(first ?? []), ...(second ?? [])]);
 }
 
 function assertDiscoveryRoute(

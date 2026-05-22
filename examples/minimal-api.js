@@ -80,6 +80,8 @@ dualDiscovery(app, dual, {
     "x-guidance":
       "Call GET /quote?symbol=ETH. If you receive 402, pay with either x402 or MPP and retry the same request.",
   },
+  serviceName: "Paid Quote API",
+  tags: ["finance", "quotes"],
   serviceInfo: {
     categories: ["finance", "quotes"],
   },

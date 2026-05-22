@@ -18,6 +18,15 @@ export type PaymentRequirements = {
   description?: string;
 };
 
+export type PaymentResourceInfo = {
+  url: string;
+  description?: string;
+  mimeType?: string;
+  serviceName?: string;
+  tags?: string[];
+  iconUrl?: string;
+};
+
 export type VerifyResult = {
   valid: boolean;
   reason?: string;
@@ -160,6 +169,23 @@ export function buildAcceptsEntry(args: {
   return entry;
 }
 
+export function buildPaymentResourceInfo(args: {
+  resourceUrl?: string;
+  description?: string;
+  serviceName?: string;
+  tags?: string[];
+  iconUrl?: string;
+}): PaymentResourceInfo {
+  return {
+    url: args.resourceUrl ?? "",
+    ...(args.description && { description: args.description }),
+    mimeType: "application/json",
+    ...(args.serviceName && { serviceName: args.serviceName }),
+    ...(args.tags?.length && { tags: args.tags }),
+    ...(args.iconUrl && { iconUrl: args.iconUrl }),
+  };
+}
+
 export function buildPaymentRequired(args: {
   network: string;
   amountRaw: string;
@@ -171,6 +197,9 @@ export function buildPaymentRequired(args: {
   inputSchema?: JsonSchema;
   outputSchema?: JsonSchema;
   method?: string;
+  serviceName?: string;
+  tags?: string[];
+  iconUrl?: string;
 }): JsonObject {
   const method = args.method?.toUpperCase();
   const extensions = buildBazaarExtensions({
@@ -192,17 +221,18 @@ export function buildPaymentRequired(args: {
         extra: args.extra,
       }),
     ],
-    resource: {
-      url: args.resourceUrl ?? "",
-      ...(method && { method }),
-      description: args.description ?? "",
-      mimeType: "application/json",
-    },
+    resource: buildPaymentResourceInfo({
+      resourceUrl: args.resourceUrl,
+      description: args.description,
+      serviceName: args.serviceName,
+      tags: args.tags,
+      iconUrl: args.iconUrl,
+    }),
     ...(extensions && { extensions }),
   };
 }
 
-function buildBazaarExtensions(args: {
+export function buildBazaarExtensions(args: {
   method?: string;
   inputSchema?: JsonSchema;
   outputSchema?: JsonSchema;
@@ -402,9 +432,66 @@ function canonicalizeRequirements(
   };
 }
 
+function resourceInfoFromRequirements(
+  requirements: JsonObject | PaymentRequirements | undefined,
+): PaymentResourceInfo | undefined {
+  if (!requirements || typeof requirements !== "object") return undefined;
+  const req = requirements as PaymentRequirements;
+  if (typeof req.resource !== "string" || req.resource.length === 0) return undefined;
+  return buildPaymentResourceInfo({
+    resourceUrl: req.resource,
+    description: req.description,
+  });
+}
+
+function normalizeResourceInfo(
+  value: unknown,
+  fallbackResource?: PaymentResourceInfo,
+): PaymentResourceInfo | undefined {
+  if (fallbackResource) return { ...fallbackResource };
+
+  if (typeof value === "string" && value.length > 0) {
+    return buildPaymentResourceInfo({ resourceUrl: value });
+  }
+
+  const resource = asObject(value);
+  if (!resource || typeof resource.url !== "string" || resource.url.length === 0) {
+    return undefined;
+  }
+
+  return {
+    url: resource.url,
+    ...(typeof resource.description === "string" &&
+      resource.description.length > 0 && { description: resource.description }),
+    ...(typeof resource.mimeType === "string" &&
+      resource.mimeType.length > 0 && { mimeType: resource.mimeType }),
+    ...(typeof resource.serviceName === "string" &&
+      resource.serviceName.length > 0 && { serviceName: resource.serviceName }),
+    ...(Array.isArray(resource.tags) &&
+      resource.tags.every((tag) => typeof tag === "string") && { tags: resource.tags }),
+    ...(typeof resource.iconUrl === "string" &&
+      resource.iconUrl.length > 0 && { iconUrl: resource.iconUrl }),
+  };
+}
+
+function mergeExtensions(
+  clientExtensions: unknown,
+  serverExtensions: JsonObject | undefined,
+): JsonObject | undefined {
+  const client = asObject(clientExtensions);
+  if (!client && !serverExtensions) return undefined;
+  return {
+    ...(client ?? {}),
+    ...(serverExtensions ?? {}),
+  };
+}
+
 function canonicalizePaymentPayload(
   payload: JsonObject,
-  fallbackResource?: string,
+  options: {
+    fallbackResource?: PaymentResourceInfo;
+    serverExtensions?: JsonObject;
+  } = {},
 ): JsonObject {
   const accepted = asObject((payload as { accepted?: unknown }).accepted);
   const next: JsonObject = accepted
@@ -414,8 +501,14 @@ function canonicalizePaymentPayload(
       }
     : { ...payload };
 
-  if (fallbackResource && typeof next.resource !== "string") {
-    next.resource = fallbackResource;
+  const resource = normalizeResourceInfo(next.resource, options.fallbackResource);
+  if (resource) {
+    next.resource = resource;
+  }
+
+  const extensions = mergeExtensions(next.extensions, options.serverExtensions);
+  if (extensions) {
+    next.extensions = extensions;
   }
 
   return next;
@@ -429,6 +522,8 @@ export async function x402Verify(
     payTo: string;
     timeoutMs: number;
     paymentRequirements?: PaymentRequirements;
+    resource?: PaymentResourceInfo;
+    extensions?: JsonObject;
     cdpAuth: CdpAuthLike;
     onVerify: ((payload: JsonObject) => void | boolean | Promise<void | boolean>) | null;
   },
@@ -506,7 +601,11 @@ export async function x402Verify(
 
   const wirePayload = canonicalizePaymentPayload(
     payload,
-    expected.paymentRequirements?.resource,
+    {
+      fallbackResource:
+        expected.resource ?? resourceInfoFromRequirements(expected.paymentRequirements),
+      serverExtensions: expected.extensions,
+    },
   );
   const wireRequirements = canonicalizeRequirements(expected.paymentRequirements);
   const body =
@@ -585,7 +684,9 @@ export async function x402Settle(
   paymentRequirements: JsonObject | PaymentRequirements | undefined,
   cdpAuth: CdpAuthLike,
 ): Promise<{ txHash?: string } & JsonObject> {
-  const wirePayload = canonicalizePaymentPayload(payload);
+  const wirePayload = canonicalizePaymentPayload(payload, {
+    fallbackResource: resourceInfoFromRequirements(paymentRequirements),
+  });
   const wireRequirements = canonicalizeRequirements(paymentRequirements);
   const body =
     wireRequirements && paymentRequirements

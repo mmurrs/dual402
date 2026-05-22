@@ -2,7 +2,9 @@ import type { Request, RequestHandler, Response } from "express";
 
 import {
   buildAcceptsEntry,
+  buildBazaarExtensions,
   buildPaymentRequired,
+  buildPaymentResourceInfo,
   maskHex,
   patchStatusToInject402,
   resolveBaseUrl,
@@ -47,6 +49,16 @@ export function createChargeFactory({
       const outputSchema =
         handler._dualOutputSchemasByRoute?.[routeKey] ??
         handler._dualOutputSchemasByMethod?.[method] ?? handler._dualOutputSchema;
+      const tags = handler._dualTagsByRoute?.[routeKey] ?? handler._dualTags;
+      const resourceUrl = `${resolveBaseUrl(req)}${route}`;
+      const resource = buildPaymentResourceInfo({
+        resourceUrl,
+        description,
+        serviceName: handler._dualServiceName,
+        tags,
+        iconUrl: handler._dualIconUrl,
+      });
+      const extensions = buildBazaarExtensions({ method, inputSchema, outputSchema });
 
       try {
         const x402Sig = readPaymentSignature(req);
@@ -56,7 +68,7 @@ export function createChargeFactory({
             amountRaw,
             asset: x402Config.asset,
             payTo: x402Config.payTo,
-            resourceUrl: `${resolveBaseUrl(req)}${route}`,
+            resourceUrl,
             description,
             extra: x402Config.extra,
           });
@@ -67,6 +79,8 @@ export function createChargeFactory({
             payTo: x402Config.payTo,
             timeoutMs: x402Config.timeoutMs,
             paymentRequirements,
+            resource,
+            extensions,
             cdpAuth: x402Config.cdpAuth,
             onVerify: onVerify
               ? (payload: JsonObject) => onVerify?.(payload, { route, amount })
@@ -105,6 +119,9 @@ export function createChargeFactory({
                   extra: x402Config.extra,
                   inputSchema,
                   outputSchema,
+                  serviceName: handler._dualServiceName,
+                  tags,
+                  iconUrl: handler._dualIconUrl,
                 });
                 return res.status(502).json({
                   error: "payment_settle_failed",
@@ -137,11 +154,14 @@ export function createChargeFactory({
             amountRaw,
             asset: x402Config.asset,
             payTo: x402Config.payTo,
-            resourceUrl: `${resolveBaseUrl(req)}${route}`,
+            resourceUrl,
             description,
             extra: x402Config.extra,
             inputSchema,
             outputSchema,
+            serviceName: handler._dualServiceName,
+            tags,
+            iconUrl: handler._dualIconUrl,
             method,
           }),
         );
@@ -237,6 +257,9 @@ function attachFallbackPaymentRequired(
     extra: { name: string; version: string };
     inputSchema?: JsonSchema;
     outputSchema?: JsonSchema;
+    serviceName?: string;
+    tags?: string[];
+    iconUrl?: string;
   },
 ): void {
   if (res.headersSent) return;
@@ -255,6 +278,9 @@ function attachFallbackPaymentRequired(
             extra: args.extra,
             inputSchema: args.inputSchema,
             outputSchema: args.outputSchema,
+            serviceName: args.serviceName,
+            tags: args.tags,
+            iconUrl: args.iconUrl,
             method: args.req.method,
           }),
         ),

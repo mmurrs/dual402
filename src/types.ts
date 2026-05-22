@@ -171,6 +171,12 @@ export type DiscoveryConfig = {
   };
   /** Additional `info.x-service` metadata (categories, keywords) for aggregator discovery. */
   serviceInfo?: Record<string, unknown>;
+  /** Service name surfaced in Bazaar-style x402 discovery. Defaults to `info.title`. */
+  serviceName?: string;
+  /** Service-level tags surfaced in Bazaar-style x402 discovery. Route tags are merged with these. */
+  tags?: string[];
+  /** Optional service icon URL surfaced in Bazaar-style x402 discovery. */
+  iconUrl?: string;
   /** Optional array of signed proofs that this service owns the advertised wallets. */
   ownershipProofs?: JsonObject[];
   /** Every paid route the service exposes. */
@@ -187,6 +193,10 @@ export type DualChargeHandler = RequestHandler & {
   _dualOutputSchemasByMethod?: Record<string, JsonSchema>;
   _dualInputSchemasByRoute?: Record<string, JsonSchema>;
   _dualOutputSchemasByRoute?: Record<string, JsonSchema>;
+  _dualServiceName?: string;
+  _dualTags?: string[];
+  _dualTagsByRoute?: Record<string, string[]>;
+  _dualIconUrl?: string;
 };
 
 /** @internal Resolved MPP config after startup validation. */

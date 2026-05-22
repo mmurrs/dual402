@@ -277,6 +277,7 @@ test("dualDiscovery keeps route metadata isolated when one handler is reused", a
 
   dualDiscovery(app, dual, {
     info: { title: "Test", description: "Test", version: "1.0.0" },
+    tags: ["shared"],
     routes: [
       {
         method: "get",
@@ -284,6 +285,7 @@ test("dualDiscovery keeps route metadata isolated when one handler is reused", a
         handler: sharedCharge,
         operationId: "routeOne",
         summary: "Route one",
+        tags: ["one"],
         parameters: [
           { name: "foo", in: "query", required: true, schema: { type: "string" } },
         ],
@@ -294,6 +296,7 @@ test("dualDiscovery keeps route metadata isolated when one handler is reused", a
         handler: sharedCharge,
         operationId: "routeTwo",
         summary: "Route two",
+        tags: ["two"],
         parameters: [
           { name: "bar", in: "query", required: true, schema: { type: "number" } },
         ],
@@ -319,6 +322,7 @@ test("dualDiscovery keeps route metadata isolated when one handler is reused", a
       headerValue(resOne.headers, "payment-required"),
     );
     assert.equal(paymentRequiredOne.accepts[0].resource, "https://public.example/one");
+    assert.deepEqual(paymentRequiredOne.resource.tags, ["shared", "one"]);
     assert.ok(
       paymentRequiredOne.extensions.bazaar.schema.properties.input.properties.queryParams.properties.foo,
     );
@@ -338,6 +342,7 @@ test("dualDiscovery keeps route metadata isolated when one handler is reused", a
       headerValue(resTwo.headers, "payment-required"),
     );
     assert.equal(paymentRequiredTwo.accepts[0].resource, "https://public.example/two");
+    assert.deepEqual(paymentRequiredTwo.resource.tags, ["shared", "two"]);
     assert.ok(
       paymentRequiredTwo.extensions.bazaar.schema.properties.input.properties.queryParams.properties.bar,
     );
@@ -423,6 +428,108 @@ test("paidRoute defines payment middleware and discovery metadata together", asy
     },
   ]);
   assert.equal(operation.parameters[0].name, "symbol");
+});
+
+test("dualDiscovery publishes Bazaar-style x402 resource metadata", async () => {
+  const app = makeApp();
+  const dual = createDual402(VALID_CONFIG);
+  const route = paidRoute(dual, {
+    method: "GET",
+    path: "/quote",
+    amount: "0.02",
+    paymentDescription: "Quote lookup",
+    operationId: "getQuote",
+    summary: "Get quote",
+    description: "Fetch a paid market quote.",
+    tags: ["quotes"],
+    parameters: [
+      {
+        name: "symbol",
+        in: "query",
+        required: true,
+        schema: { type: "string" },
+        description: "Ticker symbol",
+      },
+    ],
+    responseSchema: {
+      type: "object",
+      properties: { price: { type: "number" } },
+      required: ["price"],
+    },
+  });
+
+  dualDiscovery(app, dual, {
+    info: {
+      title: "Quote API",
+      description: "Paid quote endpoints",
+      version: "1.0.0",
+    },
+    serviceName: "Quote API",
+    tags: ["finance", "quotes"],
+    iconUrl: "https://api.example/icon.png",
+    routes: [route],
+  });
+
+  const discoveryRes = makeRes();
+  await app.routes.get("/.well-known/x402")(
+    makeReq({ host: "api.example", protocol: "https" }),
+    discoveryRes,
+  );
+
+  assert.equal(discoveryRes.body.x402Version, 2);
+  assert.equal(discoveryRes.body.payTo, VALID_CONFIG.x402.payTo);
+  assert.deepEqual(discoveryRes.body.pagination, { limit: 1, offset: 0, total: 1 });
+
+  const [resource] = discoveryRes.body.resources;
+  assert.equal(resource.resource, "https://api.example/quote");
+  assert.equal(resource.description, "Fetch a paid market quote.");
+  assert.equal(resource.type, "http");
+  assert.equal(resource.x402Version, 2);
+  assert.equal(resource.serviceName, "Quote API");
+  assert.deepEqual(resource.tags, ["finance", "quotes"]);
+  assert.equal(resource.iconUrl, "https://api.example/icon.png");
+  assert.match(resource.lastUpdated, /^\d{4}-\d{2}-\d{2}T/);
+  assert.deepEqual(resource.accepts, [
+    {
+      scheme: "exact",
+      network: VALID_CONFIG.x402.network,
+      amount: "20000",
+      asset: dual._x402Asset,
+      payTo: VALID_CONFIG.x402.payTo,
+      maxTimeoutSeconds: 300,
+      extra: { name: "USD Coin", version: "2" },
+      resource: "https://api.example/quote",
+      description: "Fetch a paid market quote.",
+    },
+  ]);
+  assert.equal(resource.extensions.bazaar.info.input.method, "GET");
+  assert.ok(
+    resource.extensions.bazaar.schema.properties.input.properties.queryParams.properties.symbol,
+  );
+
+  const openapiRes = makeRes();
+  await app.routes.get("/openapi.json")(
+    makeReq({ host: "api.example", protocol: "https" }),
+    openapiRes,
+  );
+  assert.deepEqual(openapiRes.body["x-service-info"], {
+    serviceName: "Quote API",
+    tags: ["finance", "quotes"],
+    iconUrl: "https://api.example/icon.png",
+  });
+
+  const challengeRes = makeRes();
+  await runHandler(
+    route.handler,
+    makeReq({ path: "/quote", originalUrl: "/quote?symbol=ETH", host: "api.example" }),
+    challengeRes,
+  );
+  const paymentRequired = decodeBase64Json(
+    headerValue(challengeRes.headers, "payment-required"),
+  );
+  assert.equal(paymentRequired.resource.serviceName, "Quote API");
+  assert.deepEqual(paymentRequired.resource.tags, ["finance", "quotes"]);
+  assert.equal(paymentRequired.resource.iconUrl, "https://api.example/icon.png");
 });
 
 test("dualDiscovery rejects discovery metadata that would be ambiguous", () => {
@@ -565,7 +672,16 @@ test("verified x402 requests use CDP body shape and attach receipt headers", asy
     assert.equal(calls[0].body.x402Version, 2);
     assert.equal(calls[0].body.paymentRequirements.amount, "20000");
     assert.equal(calls[0].body.paymentRequirements.extra.name, "USD Coin");
-    assert.equal(calls[0].body.paymentPayload.resource, "https://public.example/paid");
+    assert.deepEqual(calls[0].body.paymentPayload.resource, {
+      url: "https://public.example/paid",
+      description: "Paid route",
+      mimeType: "application/json",
+    });
+    assert.deepEqual(calls[1].body.paymentPayload.resource, {
+      url: "https://public.example/paid",
+      description: "Paid route",
+      mimeType: "application/json",
+    });
     assert.equal(calls[0].body.paymentRequirements.resource, undefined);
     assert.equal(calls[0].body.paymentPayload.accepted.resource, undefined);
 
@@ -585,6 +701,9 @@ test("Express app performs full unpaid challenge then x402 paid retry flow", asy
 
   dualDiscovery(app, dual, {
     info: { title: "E2E Test API", description: "Integration coverage", version: "1.0.0" },
+    serviceName: "E2E Test API",
+    tags: ["integration"],
+    iconUrl: "https://example.com/icon.png",
     routes: [
       {
         method: "GET",
@@ -662,6 +781,9 @@ test("Express app performs full unpaid challenge then x402 paid retry flow", asy
     assert.equal(paymentRequired.accepts[0].amount, "20000");
     assert.equal(paymentRequired.accepts[0].payTo, VALID_CONFIG.x402.payTo);
     assert.equal(paymentRequired.accepts[0].resource, `${baseUrl}/protected`);
+    assert.equal(paymentRequired.resource.serviceName, "E2E Test API");
+    assert.deepEqual(paymentRequired.resource.tags, ["integration"]);
+    assert.equal(paymentRequired.resource.iconUrl, "https://example.com/icon.png");
     assert.ok(challenge.headers.get("www-authenticate"));
 
     const paid = await originalFetch(`${baseUrl}/protected?id=abc`, {
@@ -677,7 +799,15 @@ test("Express app performs full unpaid challenge then x402 paid retry flow", asy
       ],
     );
     assert.equal(facilitatorCalls[0].body.paymentRequirements.amount, "20000");
-    assert.equal(facilitatorCalls[0].body.paymentPayload.resource, `${baseUrl}/protected`);
+    assert.deepEqual(facilitatorCalls[0].body.paymentPayload.resource, {
+      url: `${baseUrl}/protected`,
+      description: "Protected data",
+      mimeType: "application/json",
+      serviceName: "E2E Test API",
+      tags: ["integration"],
+      iconUrl: "https://example.com/icon.png",
+    });
+    assert.ok(facilitatorCalls[0].body.paymentPayload.extensions.bazaar);
     assert.equal(facilitatorCalls[1].body.paymentRequirements.payTo, VALID_CONFIG.x402.payTo);
 
     const receipt = decodeBase64Json(paid.headers.get("payment-response"));
