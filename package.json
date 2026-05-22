@@ -1,6 +1,6 @@
 {
   "name": "dual402",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "Add monetization and discoverability to Express APIs with x402, MPP, OpenAPI, and /.well-known/x402.",
   "type": "module",
   "main": "dist/express.js",
