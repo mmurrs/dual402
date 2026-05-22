@@ -1,6 +1,7 @@
 # dual402 Examples
 
-Standalone examples for the dual x402 + MPP Express middleware.
+Standalone examples for the dual402 Express middleware: one paid route that
+accepts x402 and MPP payments.
 
 ## Examples
 

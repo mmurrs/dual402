@@ -75,7 +75,7 @@ const quote = paidRoute(dual, {
 dualDiscovery(app, dual, {
   info: {
     title: "Paid Quote API",
-    description: "One paid route exposed through x402 and MPP.",
+    description: "One paid route that accepts either x402 or MPP payment.",
     version: "1.0.0",
     "x-guidance":
       "Call GET /quote?symbol=ETH. If you receive 402, pay with either x402 or MPP and retry the same request.",

@@ -1,15 +1,15 @@
 # dual402
 
-dual402 collapses the paid API setup into one route definition. Add a price
-and schema to an Express route, and you get monetization plus discoverability:
-one `402 Payment Required` with both [x402](https://x402.org) (Base USDC) and
-[MPP](https://mpp.dev) (Tempo USDC), plus metadata that scanners, agent
-markets, and agent clients can index.
+dual402 is one Express integration for paid APIs that accepts both
+[x402](https://x402.org) and [MPP](https://mpp.dev) payments. Add a price and
+schema once, and the same middleware handles payment challenges, verification,
+and discovery metadata for scanners, agent markets, and agent clients.
 
+- One integration: support x402 and MPP clients without implementing both
+  protocols yourself.
 - Monetization: charge pay-per-request USDC without building a billing system.
 - Discoverability: publish OpenAPI and `/.well-known/x402` from the same route
   definition.
-- Protocol reach: accept both x402 and MPP clients out of the box.
 - Express ergonomics: validate first, charge, then run the handler.
 
 ## Install
@@ -101,8 +101,8 @@ dualDiscovery(app, dual, {
 ```
 
 That is the collapsed flow: `/quote` is monetized, discoverable, and still just
-an Express route. Invalid requests stay free, valid unpaid requests receive both
-payment challenges, and paid retries continue to the protected handler.
+an Express route. Invalid requests stay free, valid unpaid requests receive x402
+and MPP payment options, and paid retries continue to the protected handler.
 
 ## Example
 
@@ -153,7 +153,7 @@ coding agent:
 
 ```text
 Install dual402, read node_modules/dual402/AGENTS.md, and make my Express API
-accept paid requests through both x402 and MPP.
+accept paid requests through both x402 and MPP with one middleware.
 ```
 
 ## Testing
