@@ -164,10 +164,73 @@ function decodeBase64Json(value) {
   return JSON.parse(Buffer.from(value, "base64").toString("utf-8"));
 }
 
-function fakeFetchResponse({ ok, status = ok ? 200 : 500, json, text = "" }) {
+function assertBazaarExtensionMatchesSchema(extension) {
+  assert.ok(extension?.info, "Bazaar extension must include info");
+  assert.ok(extension?.schema, "Bazaar extension must include schema");
+  assert.equal(
+    extension.schema.$schema,
+    "https://json-schema.org/draft/2020-12/schema",
+  );
+  const errors = validateAgainstSchema(extension.info, extension.schema);
+  assert.deepEqual(errors, [], `Bazaar extension did not match emitted schema: ${errors.join("; ")}`);
+}
+
+function validateAgainstSchema(value, schema, path = "$") {
+  if (!schema || typeof schema !== "object") return [];
+  const errors = [];
+
+  if ("const" in schema && !Object.is(value, schema.const)) {
+    errors.push(`${path} must equal ${JSON.stringify(schema.const)}`);
+  }
+  if (Array.isArray(schema.enum) && !schema.enum.some((item) => Object.is(item, value))) {
+    errors.push(`${path} must be one of ${JSON.stringify(schema.enum)}`);
+  }
+  if (schema.type && !matchesJsonSchemaType(value, schema.type)) {
+    errors.push(`${path} must be ${JSON.stringify(schema.type)}`);
+  }
+
+  const type = Array.isArray(schema.type) ? schema.type[0] : schema.type;
+  if ((type === "object" || schema.properties) && value && typeof value === "object" && !Array.isArray(value)) {
+    const properties = schema.properties && typeof schema.properties === "object" ? schema.properties : {};
+    for (const key of schema.required ?? []) {
+      if (!(key in value)) errors.push(`${path}.${key} is required`);
+    }
+    for (const [key, childSchema] of Object.entries(properties)) {
+      if (key in value) {
+        errors.push(...validateAgainstSchema(value[key], childSchema, `${path}.${key}`));
+      }
+    }
+    if (schema.additionalProperties === false) {
+      for (const key of Object.keys(value)) {
+        if (!(key in properties)) errors.push(`${path}.${key} is not allowed`);
+      }
+    }
+  }
+
+  if (Array.isArray(value) && schema.items) {
+    value.forEach((item, index) => {
+      errors.push(...validateAgainstSchema(item, schema.items, `${path}[${index}]`));
+    });
+  }
+
+  return errors;
+}
+
+function matchesJsonSchemaType(value, type) {
+  if (Array.isArray(type)) return type.some((entry) => matchesJsonSchemaType(value, entry));
+  if (type === "null") return value === null;
+  if (type === "array") return Array.isArray(value);
+  if (type === "object") return !!value && typeof value === "object" && !Array.isArray(value);
+  if (type === "integer") return Number.isInteger(value);
+  if (type === "number") return typeof value === "number" && Number.isFinite(value);
+  return typeof value === type;
+}
+
+function fakeFetchResponse({ ok, status = ok ? 200 : 500, json, text = "", headers = {} }) {
   return {
     ok,
     status,
+    headers: new Headers(headers),
     async json() {
       return json;
     },
@@ -503,6 +566,21 @@ test("dualDiscovery publishes Bazaar-style x402 resource metadata", async () => 
     },
   ]);
   assert.equal(resource.extensions.bazaar.info.input.method, "GET");
+  assert.deepEqual(resource.extensions.bazaar.schema.properties.input.required, [
+    "type",
+    "method",
+  ]);
+  assert.deepEqual(
+    resource.extensions.bazaar.schema.properties.input.properties.method.enum,
+    ["GET"],
+  );
+  assert.deepEqual(resource.extensions.bazaar.info.input.queryParams, {
+    symbol: "x",
+  });
+  assert.deepEqual(resource.extensions.bazaar.info.output.example, {
+    price: 0,
+  });
+  assertBazaarExtensionMatchesSchema(resource.extensions.bazaar);
   assert.ok(
     resource.extensions.bazaar.schema.properties.input.properties.queryParams.properties.symbol,
   );
@@ -530,6 +608,94 @@ test("dualDiscovery publishes Bazaar-style x402 resource metadata", async () => 
   assert.equal(paymentRequired.resource.serviceName, "Quote API");
   assert.deepEqual(paymentRequired.resource.tags, ["finance", "quotes"]);
   assert.equal(paymentRequired.resource.iconUrl, "https://api.example/icon.png");
+  assertBazaarExtensionMatchesSchema(paymentRequired.extensions.bazaar);
+});
+
+test("Bazaar metadata includes canonical POST examples and sanitized service fields", async () => {
+  const app = makeApp();
+  const dual = createDual402(VALID_CONFIG);
+  const route = paidRoute(dual, {
+    method: "POST",
+    path: "/lookup",
+    amount: "0.02",
+    operationId: "lookupTransit",
+    summary: "Lookup transit",
+    requestBodySchema: {
+      type: "object",
+      properties: {
+        lat: { type: "number", minimum: -90 },
+        lng: { type: "number", minimum: -180 },
+      },
+      required: ["lat", "lng"],
+      additionalProperties: false,
+    },
+    responseSchema: {
+      type: "object",
+      properties: {
+        results: { type: "array", items: { type: "object" } },
+      },
+      required: ["results"],
+    },
+    bazaar: {
+      inputExample: { lat: 40.758, lng: -73.9855 },
+      outputExample: { results: [] },
+      bodyType: "json",
+    },
+  });
+
+  dualDiscovery(app, dual, {
+    serviceName: "Transit API",
+    tags: ["nyc", "NYC", "transit", "mta", "bus", "bike", "bad tag"],
+    iconUrl: "http://localhost/icon.svg",
+    routes: [route],
+  });
+
+  const res = makeRes();
+  await runHandler(
+    route.handler,
+    makeReq({ method: "GET", path: "/lookup", originalUrl: "/lookup?probe=1" }),
+    res,
+  );
+
+  const paymentRequired = decodeBase64Json(
+    headerValue(res.headers, "payment-required"),
+  );
+  const extension = paymentRequired.extensions.bazaar;
+
+  assert.equal(extension.info.input.method, "POST");
+  assert.equal(extension.info.input.bodyType, "json");
+  assert.deepEqual(extension.info.input.body, { lat: 40.758, lng: -73.9855 });
+  assert.equal(extension.info.input.queryParams, undefined);
+  assert.deepEqual(extension.info.output.example, { results: [] });
+  assert.deepEqual(extension.schema.properties.input.required, [
+    "type",
+    "method",
+    "bodyType",
+    "body",
+  ]);
+  assert.deepEqual(extension.schema.properties.input.properties.method.enum, ["POST"]);
+  assertBazaarExtensionMatchesSchema(extension);
+
+  assert.equal(paymentRequired.resource.serviceName, "Transit API");
+  assert.deepEqual(paymentRequired.resource.tags, [
+    "nyc",
+    "transit",
+    "mta",
+    "bus",
+    "bike",
+  ]);
+  assert.equal(paymentRequired.resource.iconUrl, undefined);
+
+  const discoveryRes = makeRes();
+  await app.routes.get("/.well-known/x402")(
+    makeReq({ host: "api.example", protocol: "https" }),
+    discoveryRes,
+  );
+  const [resource] = discoveryRes.body.resources;
+  assert.equal(resource.resource, "https://api.example/lookup");
+  assert.deepEqual(resource.tags, ["nyc", "transit", "mta", "bus", "bike"]);
+  assert.equal(resource.iconUrl, undefined);
+  assertBazaarExtensionMatchesSchema(resource.extensions.bazaar);
 });
 
 test("dualDiscovery rejects discovery metadata that would be ambiguous", () => {
@@ -553,6 +719,10 @@ test("dualDiscovery rejects discovery metadata that would be ambiguous", () => {
     /invalid HTTP method/,
   );
   assert.throws(
+    () => dualDiscovery(app, dual, { routes: [{ ...baseRoute, method: "OPTIONS" }] }),
+    /invalid HTTP method/,
+  );
+  assert.throws(
     () => dualDiscovery(app, dual, { routes: [{ ...baseRoute, operationId: "" }] }),
     /operationId/,
   );
@@ -573,7 +743,7 @@ test("dualDiscovery rejects discovery metadata that would be ambiguous", () => {
   );
 });
 
-test("verified x402 requests use CDP body shape and attach receipt headers", async () => {
+test("verified x402 requests use CDP body shape without implicit Bazaar discovery", async () => {
   const { privateKey } = crypto.generateKeyPairSync("ed25519");
   const apiKeySecret = privateKey
     .export({ format: "pem", type: "pkcs8" })
@@ -621,7 +791,22 @@ test("verified x402 requests use CDP body shape and attach receipt headers", asy
         },
         signature: "0xdeadbeef",
       },
-      resource: "https://public.example/paid",
+      resource: {
+        url: "https://attacker.example/not-paid",
+        description: "attacker controlled",
+        mimeType: "text/plain",
+        serviceName: "Wrong Service",
+        tags: ["wrong"],
+        iconUrl: "https://attacker.example/icon.svg",
+      },
+      extensions: {
+        bazaar: {
+          info: {
+            input: { type: "http", method: "GET", queryParams: { fake: "yes" } },
+          },
+          schema: { type: "object" },
+        },
+      },
     }),
   ).toString("base64");
 
@@ -677,11 +862,13 @@ test("verified x402 requests use CDP body shape and attach receipt headers", asy
       description: "Paid route",
       mimeType: "application/json",
     });
+    assert.equal(calls[0].body.paymentPayload.extensions, undefined);
     assert.deepEqual(calls[1].body.paymentPayload.resource, {
       url: "https://public.example/paid",
       description: "Paid route",
       mimeType: "application/json",
     });
+    assert.equal(calls[1].body.paymentPayload.extensions, undefined);
     assert.equal(calls[0].body.paymentRequirements.resource, undefined);
     assert.equal(calls[0].body.paymentPayload.accepted.resource, undefined);
 
@@ -745,6 +932,9 @@ test("Express app performs full unpaid challenge then x402 paid retry flow", asy
   if (!server) return;
 
   const facilitatorCalls = [];
+  const extensionResponses = Buffer.from(
+    JSON.stringify({ bazaar: { status: "processing" } }),
+  ).toString("base64");
   global.fetch = async (url, init) => {
     const target = String(url);
     if (target.startsWith(VALID_CONFIG.x402.facilitatorUrl)) {
@@ -754,11 +944,16 @@ test("Express app performs full unpaid challenge then x402 paid retry flow", asy
       });
 
       if (target.endsWith("/verify")) {
-        return fakeFetchResponse({ ok: true, json: { isValid: true } });
+        return fakeFetchResponse({
+          ok: true,
+          json: { isValid: true },
+          headers: { "extension-responses": extensionResponses },
+        });
       }
       return fakeFetchResponse({
         ok: true,
         json: { success: true, transaction: `0x${"d".repeat(64)}` },
+        headers: { "extension-responses": extensionResponses },
       });
     }
     return originalFetch(url, init);
@@ -808,12 +1003,30 @@ test("Express app performs full unpaid challenge then x402 paid retry flow", asy
       iconUrl: "https://example.com/icon.png",
     });
     assert.ok(facilitatorCalls[0].body.paymentPayload.extensions.bazaar);
+    assertBazaarExtensionMatchesSchema(
+      facilitatorCalls[0].body.paymentPayload.extensions.bazaar,
+    );
+    assert.deepEqual(facilitatorCalls[1].body.paymentPayload.resource, {
+      url: `${baseUrl}/protected`,
+      description: "Protected data",
+      mimeType: "application/json",
+      serviceName: "E2E Test API",
+      tags: ["integration"],
+      iconUrl: "https://example.com/icon.png",
+    });
+    assert.ok(facilitatorCalls[1].body.paymentPayload.extensions.bazaar);
+    assertBazaarExtensionMatchesSchema(
+      facilitatorCalls[1].body.paymentPayload.extensions.bazaar,
+    );
     assert.equal(facilitatorCalls[1].body.paymentRequirements.payTo, VALID_CONFIG.x402.payTo);
 
     const receipt = decodeBase64Json(paid.headers.get("payment-response"));
     assert.equal(receipt.success, true);
     assert.equal(receipt.network, VALID_CONFIG.x402.network);
     assert.equal(receipt.txHash, `0x${"d".repeat(64)}`);
+    assert.deepEqual(receipt.extensionResponses, {
+      bazaar: { status: "processing" },
+    });
   } finally {
     global.fetch = originalFetch;
     await closeServer(server);

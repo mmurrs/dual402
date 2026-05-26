@@ -130,6 +130,12 @@ const quote = paidRoute(dual, {
     },
     required: ["symbol", "price"],
   },
+  // Optional. dual402 can synthesize simple Bazaar examples from schemas when
+  // omitted; set these when a realistic marketplace example matters.
+  bazaar: {
+    inputExample: { symbol: "ETH" },
+    outputExample: { symbol: "ETH", price: 42 },
+  },
 });
 
 function validateQuoteRequest(req, res, next) {
@@ -156,6 +162,15 @@ dualDiscovery(app, dual, {
 `paidRoute(dual, { ..., paymentDescription })` is the right place to set the
 human-readable label that ends up in the MPP `WWW-Authenticate` header. If
 omitted, dual402 reuses `summary`.
+
+`dualDiscovery` also binds Bazaar metadata to CDP verify/settle payloads. The
+generated `extensions.bazaar.info` is built with a matching Draft 2020-12 schema;
+use explicit `bazaar` examples for marketplace-facing routes with complex JSON
+Schemas. `serviceName` / `tags` / `iconUrl` are sanitized to the Bazaar
+service-metadata limits before being advertised. If the facilitator returns an
+`EXTENSION-RESPONSES` header, dual402 copies it into the `PAYMENT-RESPONSE`
+receipt as `extensionResponses` so you can see Bazaar `processing` / `rejected`
+statuses while testing.
 
 ## Middleware Ordering
 

@@ -25,6 +25,8 @@ export { maskHex } from "./internal/x402.js";
 export { parseCdpPrivateKey } from "./internal/cdp.js";
 export type {
   CdpAuth,
+  BazaarBodyType,
+  BazaarRouteMetadata,
   ChargeOptions,
   DiscoveryConfig,
   DiscoveryRoute,

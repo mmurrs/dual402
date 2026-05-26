@@ -1,6 +1,11 @@
 import type { RequestHandler } from "express";
 
-import type { JsonObject, JsonSchema } from "./internal/x402.js";
+import type {
+  BazaarBodyType,
+  BazaarRouteMetadata,
+  JsonObject,
+  JsonSchema,
+} from "./internal/x402.js";
 
 /** MPP (Tempo USDC) configuration. Passed to `createDual402` as `mpp`. */
 export type MppConfig = {
@@ -157,6 +162,13 @@ export type DiscoveryRoute = {
   requestBodyRequired?: boolean;
   /** JSON Schema for the successful response. Threaded into the 402 challenge as a Bazaar schema hint. */
   responseSchema?: JsonSchema;
+  /**
+   * Optional Bazaar extension hints. When omitted, dual402 synthesizes
+   * best-effort examples from simple `parameters` / `requestBodySchema` and
+   * `responseSchema` shapes. Provide explicit examples for marketplace-critical
+   * or complex schemas.
+   */
+  bazaar?: BazaarRouteMetadata;
 };
 
 /** Config for `dualDiscovery`. */
@@ -193,11 +205,18 @@ export type DualChargeHandler = RequestHandler & {
   _dualOutputSchemasByMethod?: Record<string, JsonSchema>;
   _dualInputSchemasByRoute?: Record<string, JsonSchema>;
   _dualOutputSchemasByRoute?: Record<string, JsonSchema>;
+  _dualCanonicalMethod?: string;
+  _dualCanonicalMethodsByPath?: Record<string, string>;
+  _dualBazaar?: BazaarRouteMetadata;
+  _dualBazaarByMethod?: Record<string, BazaarRouteMetadata>;
+  _dualBazaarByRoute?: Record<string, BazaarRouteMetadata>;
   _dualServiceName?: string;
   _dualTags?: string[];
   _dualTagsByRoute?: Record<string, string[]>;
   _dualIconUrl?: string;
 };
+
+export type { BazaarBodyType, BazaarRouteMetadata };
 
 /** @internal Resolved MPP config after startup validation. */
 export type ResolvedMppConfig = Readonly<{
