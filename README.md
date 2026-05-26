@@ -145,10 +145,17 @@ CDP credentials.
 
 - `createDual402(config)` validates shared x402 and MPP configuration.
 - `paidRoute(dual, options)` creates route middleware and discovery metadata.
+  Set `bazaar.inputExample`, `bazaar.outputExample`, or `bazaar.bodyType` when
+  you want Bazaar marketplace metadata to use real examples. dual402 can
+  synthesize best-effort examples from simple request/response JSON Schemas, but
+  marketplace-facing routes should pass explicit examples for complex schemas.
 - `dualDiscovery(app, dual, config)` mounts `GET /openapi.json` and
   `GET /.well-known/x402`. Set `serviceName`, `tags`, and `iconUrl` to surface
   Bazaar-style identity metadata in the x402 `resource` object and discovery
-  manifest.
+  manifest. These fields are sanitized to the Bazaar service-metadata limits
+  before they are sent to the x402 facilitator. When the facilitator returns
+  `EXTENSION-RESPONSES`, dual402 includes it in the `PAYMENT-RESPONSE` receipt
+  as `extensionResponses` for Bazaar indexing diagnostics.
 - `dual.charge({ amount, description?, waitForSettle? })` is the lower-level
   middleware factory when you do not need discovery metadata.
 

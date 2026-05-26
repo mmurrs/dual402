@@ -1,4 +1,5 @@
 import type { Request, Response } from "express";
+import { domainToASCII } from "node:url";
 
 import { generateCdpJwt } from "./cdp.js";
 
@@ -27,12 +28,21 @@ export type PaymentResourceInfo = {
   iconUrl?: string;
 };
 
+export type BazaarBodyType = "json" | "form-data" | "text";
+
+export type BazaarRouteMetadata = {
+  inputExample?: unknown;
+  outputExample?: unknown;
+  bodyType?: BazaarBodyType;
+};
+
 export type VerifyResult = {
   valid: boolean;
   reason?: string;
   txHash?: string;
   payload?: JsonObject;
   paymentRequirements?: JsonObject;
+  extensionResponses?: JsonObject;
 };
 
 type CdpAuthLike = Readonly<{
@@ -44,6 +54,22 @@ const MAX_SIGNATURE_BYTES = 16 * 1024;
 const CDP_FACILITATOR_HOST = "api.cdp.coinbase.com";
 const BAZAAR_QUERY_METHODS = ["GET", "HEAD", "DELETE"];
 const BAZAAR_BODY_METHODS = ["POST", "PUT", "PATCH"];
+const MAX_SERVICE_NAME_LENGTH = 32;
+const MAX_TAG_LENGTH = 32;
+const MAX_TAGS = 5;
+const MAX_ICON_URL_LENGTH = 2048;
+const CONTROL_CHAR_RE = /[\x00-\x1f\x7f]/;
+const PRINTABLE_ASCII_RE = /^[\x20-\x7e]+$/;
+const UNICODE_CONTROL_RE = /\p{Cc}/u;
+const IPV4_RE = /^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$/;
+const ALL_DIGITS_RE = /^\d+$/;
+const HEX_LITERAL_RE = /^0x[0-9a-f]+$/i;
+const LOOPBACK_HOSTNAMES = new Set([
+  "localhost",
+  "localhost.localdomain",
+  "ip6-localhost",
+  "ip6-loopback",
+]);
 
 function base64Json(data: unknown): string {
   return Buffer.from(JSON.stringify(data)).toString("base64");
@@ -172,17 +198,21 @@ export function buildAcceptsEntry(args: {
 export function buildPaymentResourceInfo(args: {
   resourceUrl?: string;
   description?: string;
-  serviceName?: string;
-  tags?: string[];
-  iconUrl?: string;
+  serviceName?: unknown;
+  tags?: unknown;
+  iconUrl?: unknown;
 }): PaymentResourceInfo {
+  const serviceMetadata = sanitizeResourceServiceMetadata({
+    serviceName: args.serviceName,
+    tags: args.tags,
+    iconUrl: args.iconUrl,
+  });
+
   return {
     url: args.resourceUrl ?? "",
     ...(args.description && { description: args.description }),
     mimeType: "application/json",
-    ...(args.serviceName && { serviceName: args.serviceName }),
-    ...(args.tags?.length && { tags: args.tags }),
-    ...(args.iconUrl && { iconUrl: args.iconUrl }),
+    ...serviceMetadata,
   };
 }
 
@@ -196,6 +226,9 @@ export function buildPaymentRequired(args: {
   extra: { name: string; version: string };
   inputSchema?: JsonSchema;
   outputSchema?: JsonSchema;
+  inputExample?: unknown;
+  outputExample?: unknown;
+  bodyType?: BazaarBodyType;
   method?: string;
   serviceName?: string;
   tags?: string[];
@@ -206,6 +239,9 @@ export function buildPaymentRequired(args: {
     method,
     inputSchema: args.inputSchema,
     outputSchema: args.outputSchema,
+    inputExample: args.inputExample,
+    outputExample: args.outputExample,
+    bodyType: args.bodyType,
   });
 
   return {
@@ -236,49 +272,71 @@ export function buildBazaarExtensions(args: {
   method?: string;
   inputSchema?: JsonSchema;
   outputSchema?: JsonSchema;
+  inputExample?: unknown;
+  outputExample?: unknown;
+  bodyType?: BazaarBodyType;
 }): JsonObject | undefined {
   const { method = "", inputSchema, outputSchema } = args;
-  const hasInput = !!inputSchema;
-  const hasOutput = !!outputSchema;
+  const hasInput = !!inputSchema || args.inputExample !== undefined;
+  const hasOutput = !!outputSchema || args.outputExample !== undefined;
   if (!hasInput && !hasOutput) return undefined;
 
   const upper = method.toUpperCase();
   const isBodyMethod = BAZAAR_BODY_METHODS.includes(upper);
   const isQueryMethod = BAZAAR_QUERY_METHODS.includes(upper);
+  if (!isBodyMethod && !isQueryMethod) return undefined;
+
+  const bodyType = args.bodyType ?? "json";
+  const inputExample =
+    args.inputExample !== undefined
+      ? args.inputExample
+      : inputSchema
+        ? exampleFromJsonSchema(inputSchema)
+        : {};
+  const outputExample =
+    args.outputExample !== undefined
+      ? args.outputExample
+      : outputSchema
+        ? exampleFromJsonSchema(outputSchema)
+        : undefined;
 
   const infoInput: JsonObject = {
     type: "http",
     ...(upper && { method: upper }),
-    ...(isBodyMethod && { bodyType: "json", body: {} }),
-    ...(!isBodyMethod && hasInput && { queryParams: {} }),
+    ...(isBodyMethod && { bodyType, body: inputExample ?? {} }),
+    ...(!isBodyMethod && hasInput && { queryParams: inputExample ?? {} }),
   };
 
   const info: JsonObject = {
     input: infoInput,
-    ...(hasOutput && { output: { type: "json", example: {} } }),
-  };
-
-  const inputProperties: JsonObject = {
-    type: { type: "string", const: "http" },
-    ...(upper && {
-      method: {
-        type: "string",
-        enum: isBodyMethod
-          ? BAZAAR_BODY_METHODS
-          : isQueryMethod
-            ? BAZAAR_QUERY_METHODS
-            : [upper],
+    ...(hasOutput && {
+      output: {
+        type: "json",
+        ...(outputExample !== undefined && { example: outputExample }),
       },
     }),
+  };
+
+  const methodEnum = upper
+    ? [upper]
+    : isBodyMethod
+      ? BAZAAR_BODY_METHODS
+      : BAZAAR_QUERY_METHODS;
+  const inputProperties: JsonObject = {
+    type: { type: "string", const: "http" },
+    method: {
+      type: "string",
+      enum: methodEnum,
+    },
     ...(isBodyMethod && {
       bodyType: { type: "string", enum: ["json", "form-data", "text"] },
-      body: inputSchema ?? { type: "object" },
+      body: inputSchema ?? schemaFromExample(inputExample) ?? { type: "object" },
     }),
     ...(!isBodyMethod &&
       hasInput && {
         queryParams: {
           type: "object",
-          ...inputSchema,
+          ...(inputSchema ?? schemaFromExample(inputExample)),
         },
       }),
   };
@@ -290,7 +348,9 @@ export function buildBazaarExtensions(args: {
       input: {
         type: "object",
         properties: inputProperties,
-        required: isBodyMethod ? ["type", "bodyType", "body"] : ["type"],
+        required: isBodyMethod
+          ? ["type", "method", "bodyType", "body"]
+          : ["type", "method"],
         additionalProperties: false,
       },
       ...(hasOutput && {
@@ -299,8 +359,10 @@ export function buildBazaarExtensions(args: {
           properties: {
             type: { type: "string" },
             example: {
-              type: "object",
-              ...outputSchema,
+              ...(outputSchema ??
+                schemaFromExample(outputExample) ?? {
+                  type: "object",
+                }),
             },
           },
           required: ["type"],
@@ -311,6 +373,163 @@ export function buildBazaarExtensions(args: {
   };
 
   return { bazaar: { info, schema } };
+}
+
+export function sanitizeResourceServiceMetadata(args: {
+  serviceName?: unknown;
+  tags?: unknown;
+  iconUrl?: unknown;
+}): Pick<PaymentResourceInfo, "serviceName" | "tags" | "iconUrl"> {
+  const out: Pick<PaymentResourceInfo, "serviceName" | "tags" | "iconUrl"> = {};
+  if (isValidServiceName(args.serviceName)) out.serviceName = args.serviceName;
+  const tags = sanitizeTags(args.tags);
+  if (tags) out.tags = tags;
+  if (isValidIconUrl(args.iconUrl)) out.iconUrl = args.iconUrl;
+  return out;
+}
+
+function isValidServiceName(value: unknown): value is string {
+  if (typeof value !== "string") return false;
+  if (value.length === 0 || value.length > MAX_SERVICE_NAME_LENGTH) return false;
+  if (UNICODE_CONTROL_RE.test(value)) return false;
+  return PRINTABLE_ASCII_RE.test(value);
+}
+
+function sanitizeTags(value: unknown): string[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const out: string[] = [];
+  const seen = new Set<string>();
+
+  for (const entry of value) {
+    if (typeof entry !== "string") continue;
+    if (entry.length === 0 || entry.length > MAX_TAG_LENGTH) continue;
+    if (UNICODE_CONTROL_RE.test(entry) || !PRINTABLE_ASCII_RE.test(entry)) continue;
+    const key = entry.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(entry);
+    if (out.length === MAX_TAGS) break;
+  }
+
+  return out.length > 0 ? out : undefined;
+}
+
+function isValidIconUrl(value: unknown): value is string {
+  if (typeof value !== "string") return false;
+  if (value.length === 0 || value.length > MAX_ICON_URL_LENGTH) return false;
+  if (CONTROL_CHAR_RE.test(value)) return false;
+
+  let parsed: URL;
+  try {
+    parsed = new URL(value);
+  } catch {
+    return false;
+  }
+
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return false;
+  if (parsed.username !== "" || parsed.password !== "") return false;
+  if (parsed.host.startsWith("[")) return false;
+
+  let hostname: string;
+  try {
+    hostname = decodeURIComponent(parsed.hostname);
+  } catch {
+    return false;
+  }
+
+  hostname = domainToASCII(hostname).toLowerCase();
+  if (!hostname) return false;
+  if (LOOPBACK_HOSTNAMES.has(hostname)) return false;
+  if (IPV4_RE.test(hostname)) return false;
+  if (ALL_DIGITS_RE.test(hostname)) return false;
+  if (HEX_LITERAL_RE.test(hostname)) return false;
+  return true;
+}
+
+function exampleFromJsonSchema(schema: JsonSchema | undefined): unknown {
+  const object = asObject(schema);
+  if (!object) return {};
+  if ("const" in object) return object.const;
+  if (Array.isArray(object.enum) && object.enum.length > 0) return object.enum[0];
+  if ("default" in object) return object.default;
+  if (Array.isArray(object.examples) && object.examples.length > 0) {
+    return object.examples[0];
+  }
+
+  const rawType = object.type;
+  const type = Array.isArray(rawType)
+    ? rawType.find((value) => value !== "null")
+    : rawType;
+
+  if (type === "object" || asObject(object.properties)) {
+    const properties = asObject(object.properties) ?? {};
+    const out: JsonObject = {};
+    for (const [key, value] of Object.entries(properties)) {
+      out[key] = exampleFromJsonSchema(asObject(value) ?? undefined);
+    }
+    return out;
+  }
+
+  if (type === "array") return [];
+  if (type === "integer") return exampleNumber(object, true);
+  if (type === "number") return exampleNumber(object, false);
+  if (type === "boolean") return true;
+  if (type === "null") return null;
+  if (type === "string") return exampleString(object);
+  return {};
+}
+
+function exampleNumber(schema: JsonObject, integer: boolean): number {
+  const minimum =
+    typeof schema.minimum === "number"
+      ? schema.minimum
+      : typeof schema.exclusiveMinimum === "number"
+        ? schema.exclusiveMinimum + 1
+        : 0;
+  return integer ? Math.ceil(minimum) : minimum;
+}
+
+function exampleString(schema: JsonObject): string {
+  if (schema.format === "date-time") return "2026-01-01T00:00:00.000Z";
+  if (schema.format === "date") return "2026-01-01";
+  if (schema.format === "uri" || schema.format === "url") {
+    return "https://example.com";
+  }
+
+  const minLength =
+    typeof schema.minLength === "number" && schema.minLength > 0
+      ? schema.minLength
+      : 1;
+  const maxLength =
+    typeof schema.maxLength === "number" && schema.maxLength > 0
+      ? schema.maxLength
+      : undefined;
+  const length = maxLength ? Math.min(minLength, maxLength) : minLength;
+  return "x".repeat(length);
+}
+
+function schemaFromExample(example: unknown): JsonSchema | undefined {
+  if (example === undefined) return undefined;
+  if (example === null) return { type: "null" };
+  if (Array.isArray(example)) {
+    return {
+      type: "array",
+      ...(example.length > 0 && { items: schemaFromExample(example[0]) }),
+    };
+  }
+  if (typeof example === "object") {
+    const properties: JsonObject = {};
+    for (const [key, value] of Object.entries(example as JsonObject)) {
+      properties[key] = schemaFromExample(value) ?? {};
+    }
+    return { type: "object", properties };
+  }
+  if (typeof example === "string") return { type: "string" };
+  if (typeof example === "number") {
+    return { type: Number.isInteger(example) ? "integer" : "number" };
+  }
+  if (typeof example === "boolean") return { type: "boolean" };
+  return undefined;
 }
 
 export function patchStatusToInject402(
@@ -448,29 +667,26 @@ function normalizeResourceInfo(
   value: unknown,
   fallbackResource?: PaymentResourceInfo,
 ): PaymentResourceInfo | undefined {
-  if (fallbackResource) return { ...fallbackResource };
-
-  if (typeof value === "string" && value.length > 0) {
-    return buildPaymentResourceInfo({ resourceUrl: value });
-  }
-
   const resource = asObject(value);
-  if (!resource || typeof resource.url !== "string" || resource.url.length === 0) {
-    return undefined;
-  }
+  const normalized =
+    typeof value === "string" && value.length > 0
+      ? buildPaymentResourceInfo({ resourceUrl: value })
+      : resource && typeof resource.url === "string" && resource.url.length > 0
+        ? buildPaymentResourceInfo({
+            resourceUrl: resource.url,
+            description:
+              typeof resource.description === "string" ? resource.description : undefined,
+            serviceName: resource.serviceName,
+            tags: Array.isArray(resource.tags) ? resource.tags : undefined,
+            iconUrl: resource.iconUrl,
+          })
+        : undefined;
+
+  if (!fallbackResource) return normalized;
 
   return {
-    url: resource.url,
-    ...(typeof resource.description === "string" &&
-      resource.description.length > 0 && { description: resource.description }),
-    ...(typeof resource.mimeType === "string" &&
-      resource.mimeType.length > 0 && { mimeType: resource.mimeType }),
-    ...(typeof resource.serviceName === "string" &&
-      resource.serviceName.length > 0 && { serviceName: resource.serviceName }),
-    ...(Array.isArray(resource.tags) &&
-      resource.tags.every((tag) => typeof tag === "string") && { tags: resource.tags }),
-    ...(typeof resource.iconUrl === "string" &&
-      resource.iconUrl.length > 0 && { iconUrl: resource.iconUrl }),
+    ...fallbackResource,
+    mimeType: fallbackResource.mimeType ?? "application/json",
   };
 }
 
@@ -479,9 +695,20 @@ function mergeExtensions(
   serverExtensions: JsonObject | undefined,
 ): JsonObject | undefined {
   const client = asObject(clientExtensions);
-  if (!client && !serverExtensions) return undefined;
+  const sanitizedClient = client ? { ...client } : undefined;
+  delete sanitizedClient?.bazaar;
+
+  if (!sanitizedClient && !serverExtensions) return undefined;
+  if (
+    sanitizedClient &&
+    Object.keys(sanitizedClient).length === 0 &&
+    !serverExtensions
+  ) {
+    return undefined;
+  }
+
   return {
-    ...(client ?? {}),
+    ...(sanitizedClient ?? {}),
     ...(serverExtensions ?? {}),
   };
 }
@@ -509,6 +736,8 @@ function canonicalizePaymentPayload(
   const extensions = mergeExtensions(next.extensions, options.serverExtensions);
   if (extensions) {
     next.extensions = extensions;
+  } else {
+    delete next.extensions;
   }
 
   return next;
@@ -637,6 +866,7 @@ export async function x402Verify(
     if (!data) {
       return { valid: false, reason: "facilitator_bad_json" };
     }
+    const extensionResponses = parseExtensionResponses(res.headers);
 
     const valid = data.isValid === true || data.valid === true;
     const rawReason =
@@ -664,6 +894,7 @@ export async function x402Verify(
       txHash: typeof data.txHash === "string" ? data.txHash : undefined,
       payload: valid ? wirePayload : undefined,
       paymentRequirements: valid ? wireRequirements : undefined,
+      ...(extensionResponses && { extensionResponses }),
     };
   } catch (error) {
     if (error instanceof Error && error.name === "AbortError") {
@@ -683,9 +914,15 @@ export async function x402Settle(
   timeoutMs: number,
   paymentRequirements: JsonObject | PaymentRequirements | undefined,
   cdpAuth: CdpAuthLike,
-): Promise<{ txHash?: string } & JsonObject> {
+  options: {
+    resource?: PaymentResourceInfo;
+    extensions?: JsonObject;
+  } = {},
+): Promise<{ txHash?: string; extensionResponses?: JsonObject } & JsonObject> {
   const wirePayload = canonicalizePaymentPayload(payload, {
-    fallbackResource: resourceInfoFromRequirements(paymentRequirements),
+    fallbackResource:
+      options.resource ?? resourceInfoFromRequirements(paymentRequirements),
+    serverExtensions: options.extensions,
   });
   const wireRequirements = canonicalizeRequirements(paymentRequirements);
   const body =
@@ -710,6 +947,7 @@ export async function x402Settle(
   }
 
   const data = asObject(await res.json().catch(() => ({}))) ?? {};
+  const extensionResponses = parseExtensionResponses(res.headers);
   return {
     ...data,
     txHash:
@@ -718,7 +956,19 @@ export async function x402Settle(
         : typeof data.txHash === "string"
           ? data.txHash
           : undefined,
+    ...(extensionResponses && { extensionResponses }),
   };
+}
+
+function parseExtensionResponses(headers: Headers): JsonObject | undefined {
+  const value = headers.get("extension-responses");
+  if (!value) return undefined;
+
+  try {
+    return asObject(JSON.parse(Buffer.from(value, "base64").toString("utf8"))) ?? undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 export function extractRequestBodySchema(

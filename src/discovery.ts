@@ -6,7 +6,9 @@ import {
   extractRequestBodySchema,
   parametersToSchema,
   resolveBaseUrl,
+  sanitizeResourceServiceMetadata,
   toSmallestUnit,
+  type BazaarRouteMetadata,
   type JsonObject,
   type JsonSchema,
 } from "./internal/x402.js";
@@ -30,11 +32,9 @@ const OPENAPI_HTTP_METHODS = new Set([
   "DELETE",
   "GET",
   "HEAD",
-  "OPTIONS",
   "PATCH",
   "POST",
   "PUT",
-  "TRACE",
 ]);
 
 /**
@@ -130,6 +130,10 @@ export function dualDiscovery(
       extractRequestBodySchema(requestBody) ??
       parametersToSchema(route.parameters);
     const outputSchema = route.responseSchema ?? DEFAULT_RESPONSE_SCHEMA;
+    const bazaarMetadata = normalizeBazaarMetadata(route.bazaar);
+    route.handler._dualCanonicalMethod ??= method;
+    route.handler._dualCanonicalMethodsByPath ??= {};
+    route.handler._dualCanonicalMethodsByPath[route.path] = method;
     if (inputSchema) {
       route.handler._dualInputSchema ??= inputSchema;
       route.handler._dualInputSchemasByMethod ??= {};
@@ -142,6 +146,13 @@ export function dualDiscovery(
     route.handler._dualOutputSchemasByMethod[method] = outputSchema;
     route.handler._dualOutputSchemasByRoute ??= {};
     route.handler._dualOutputSchemasByRoute[`${method} ${route.path}`] = outputSchema;
+    if (bazaarMetadata) {
+      route.handler._dualBazaar ??= bazaarMetadata;
+      route.handler._dualBazaarByMethod ??= {};
+      route.handler._dualBazaarByMethod[method] = bazaarMetadata;
+      route.handler._dualBazaarByRoute ??= {};
+      route.handler._dualBazaarByRoute[`${method} ${route.path}`] = bazaarMetadata;
+    }
     if (serviceName) route.handler._dualServiceName = serviceName;
     const routeTags = mergeTags(serviceTags, route.tags);
     if (routeTags.length > 0) {
@@ -271,9 +282,24 @@ function buildX402Resource(args: {
     route.handler._dualOutputSchemasByRoute?.[routeKey] ??
     route.handler._dualOutputSchemasByMethod?.[method] ??
     route.handler._dualOutputSchema;
-  const extensions = buildBazaarExtensions({ method, inputSchema, outputSchema });
+  const bazaarMetadata =
+    route.handler._dualBazaarByRoute?.[routeKey] ??
+    route.handler._dualBazaarByMethod?.[method] ??
+    route.handler._dualBazaar ??
+    normalizeBazaarMetadata(route.bazaar);
+  const extensions = buildBazaarExtensions({
+    method,
+    inputSchema,
+    outputSchema,
+    ...bazaarMetadata,
+  });
   const serviceName = config.serviceName ?? config.info?.title;
   const tags = mergeTags(config.tags, route.tags);
+  const serviceMetadata = sanitizeResourceServiceMetadata({
+    serviceName,
+    tags,
+    iconUrl: config.iconUrl,
+  });
 
   return {
     resource: resourceUrl,
@@ -293,9 +319,7 @@ function buildX402Resource(args: {
       }),
     ],
     ...(extensions && { extensions }),
-    ...(serviceName && { serviceName }),
-    ...(tags.length > 0 && { tags }),
-    ...(config.iconUrl && { iconUrl: config.iconUrl }),
+    ...serviceMetadata,
   };
 }
 
@@ -349,6 +373,23 @@ function mergeTags(
   second: readonly string[] | undefined,
 ): string[] {
   return normalizeTags([...(first ?? []), ...(second ?? [])]);
+}
+
+function normalizeBazaarMetadata(
+  metadata: BazaarRouteMetadata | undefined,
+): BazaarRouteMetadata | undefined {
+  if (!metadata || typeof metadata !== "object") return undefined;
+  const normalized: BazaarRouteMetadata = {};
+  if ("inputExample" in metadata) normalized.inputExample = metadata.inputExample;
+  if ("outputExample" in metadata) normalized.outputExample = metadata.outputExample;
+  if (
+    metadata.bodyType === "json" ||
+    metadata.bodyType === "form-data" ||
+    metadata.bodyType === "text"
+  ) {
+    normalized.bodyType = metadata.bodyType;
+  }
+  return Object.keys(normalized).length > 0 ? normalized : undefined;
 }
 
 function assertDiscoveryRoute(

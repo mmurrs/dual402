@@ -14,6 +14,7 @@ import {
   x402Verify,
   type JsonObject,
   type JsonSchema,
+  type BazaarRouteMetadata,
 } from "./internal/x402.js";
 import type { ChargeOptions, DualChargeHandler, OnVerify, ResolvedX402Config } from "./types.js";
 
@@ -41,7 +42,12 @@ export function createChargeFactory({
         (typeof req.path === "string" && req.path) ||
         String(req.originalUrl || "").split("?")[0] ||
         "/";
-      const method = String(req.method || "GET").toUpperCase();
+      const method = String(
+        handler._dualCanonicalMethodsByPath?.[route] ??
+          handler._dualCanonicalMethod ??
+          req.method ??
+          "GET",
+      ).toUpperCase();
       const routeKey = `${method} ${route}`;
       const inputSchema =
         handler._dualInputSchemasByRoute?.[routeKey] ??
@@ -49,6 +55,10 @@ export function createChargeFactory({
       const outputSchema =
         handler._dualOutputSchemasByRoute?.[routeKey] ??
         handler._dualOutputSchemasByMethod?.[method] ?? handler._dualOutputSchema;
+      const bazaarMetadata =
+        handler._dualBazaarByRoute?.[routeKey] ??
+        handler._dualBazaarByMethod?.[method] ??
+        handler._dualBazaar;
       const tags = handler._dualTagsByRoute?.[routeKey] ?? handler._dualTags;
       const resourceUrl = `${resolveBaseUrl(req)}${route}`;
       const resource = buildPaymentResourceInfo({
@@ -58,7 +68,12 @@ export function createChargeFactory({
         tags,
         iconUrl: handler._dualIconUrl,
       });
-      const extensions = buildBazaarExtensions({ method, inputSchema, outputSchema });
+      const extensions = buildBazaarExtensions({
+        method,
+        inputSchema,
+        outputSchema,
+        ...bazaarMetadata,
+      });
 
       try {
         const x402Sig = readPaymentSignature(req);
@@ -97,12 +112,18 @@ export function createChargeFactory({
               x402Config.timeoutMs,
               verified.paymentRequirements ?? paymentRequirements,
               x402Config.cdpAuth,
+              { resource, extensions },
             );
 
             if (waitForSettle) {
               try {
                 const result = await settlePromise;
-                applyReceiptHeader(res, x402Config.network, result.txHash);
+                applyReceiptHeader(
+                  res,
+                  x402Config.network,
+                  result.txHash,
+                  result.extensionResponses ?? verified.extensionResponses,
+                );
                 logSettle(amount, route, result.txHash);
               } catch (error) {
                 console.error(
@@ -119,6 +140,8 @@ export function createChargeFactory({
                   extra: x402Config.extra,
                   inputSchema,
                   outputSchema,
+                  bazaarMetadata,
+                  method,
                   serviceName: handler._dualServiceName,
                   tags,
                   iconUrl: handler._dualIconUrl,
@@ -136,7 +159,12 @@ export function createChargeFactory({
                     `[PAY] x402 settle FAILED amount=${amount} route=${route} err=${errorMessage(error)}`,
                   );
                 });
-              applyReceiptHeader(res, x402Config.network, verified.txHash);
+              applyReceiptHeader(
+                res,
+                x402Config.network,
+                verified.txHash,
+                verified.extensionResponses,
+              );
             }
 
             return next();
@@ -159,6 +187,7 @@ export function createChargeFactory({
             extra: x402Config.extra,
             inputSchema,
             outputSchema,
+            ...bazaarMetadata,
             serviceName: handler._dualServiceName,
             tags,
             iconUrl: handler._dualIconUrl,
@@ -229,6 +258,7 @@ function applyReceiptHeader(
   res: Response,
   network: string,
   txHash: string | undefined,
+  extensionResponses?: JsonObject,
 ): void {
   if (txHash && !res.headersSent) {
     res.setHeader(
@@ -238,6 +268,7 @@ function applyReceiptHeader(
           success: true,
           txHash,
           network,
+          ...(extensionResponses && { extensionResponses }),
         }),
       ).toString("base64"),
     );
@@ -257,6 +288,8 @@ function attachFallbackPaymentRequired(
     extra: { name: string; version: string };
     inputSchema?: JsonSchema;
     outputSchema?: JsonSchema;
+    bazaarMetadata?: BazaarRouteMetadata;
+    method: string;
     serviceName?: string;
     tags?: string[];
     iconUrl?: string;
@@ -278,10 +311,11 @@ function attachFallbackPaymentRequired(
             extra: args.extra,
             inputSchema: args.inputSchema,
             outputSchema: args.outputSchema,
+            ...args.bazaarMetadata,
             serviceName: args.serviceName,
             tags: args.tags,
             iconUrl: args.iconUrl,
-            method: args.req.method,
+            method: args.method,
           }),
         ),
       ).toString("base64"),
