@@ -1,6 +1,6 @@
 {
   "name": "dual402",
-  "version": "0.1.5",
+  "version": "0.2.0",
   "description": "One Express middleware for paid APIs: accept x402 and MPP payments, with OpenAPI and /.well-known/x402 discovery.",
   "type": "module",
   "main": "dist/express.js",
